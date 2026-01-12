@@ -24,45 +24,54 @@ Ollama must be installed and running **before** starting the backend.
 ### 1. Install Ollama
 On Linux:
 ```bash
-curl -fsSL https://ollama.com/install.sh | sh
+curl -fsSL https://ollama.com/install.sh | sh```
 
 ### 2. Verify Ollama Installation
-  ollama --version
+```bash
+  ollama --version```
 
 ### 3. Start the Ollama Server
-    ollama serve
+```bash
+    ollama serve```
 
 ### 4. In a separate terminal, pull the required models
+```bash
   ollama pull gpt-oss:20b
-  ollama pull llama3.1
+  ollama pull llama3.1```
 
 ## Installing and running the data scientist
 
 ### 5. Clone this github repo
+```bash
   git clone https://github.com/oln7373/AI-data-scientist
-  cd AI-data-scientist
+  cd AI-data-scientist```
 
 ### 6. Install requirements
-  pip install -r myenv.txt
+```bash
+  pip install -r myenv.txt```
 
 ### 7. Launch the FastAPI Backend
-  uvicorn backend:app --host 127.0.0.1 --port 8001 --reload
+```bash
+  uvicorn backend:app --host 127.0.0.1 --port 8001 --reload```
 (The host and port may be changed if needed.)
 
 ### 8. Launch the Streamlit Frontend
-  streamlit run app.py --server.address 127.0.0.1 --server.port 8501
+```bash
+  streamlit run app.py --server.address 127.0.0.1 --server.port 8501```
 
 ### 9. (OPTIONAL) Port Forwarding 
 If running on a remote machine and accessing the interface locally, forward the necessary ports:
+```bash
   ssh -L 8501:127.0.0.1:8501 \
     -L 8001:127.0.0.1:8001 \
     -i ~/.ssh/<YOUR_KEY> \
-    <YOUR_USER>@<YOUR_MACHINE>.edu
+    <YOUR_USER>@<YOUR_MACHINE>.edu```
 (Ports and hostnames may be adjusted as needed.)
 
 ### 10. Access the Application
 Assuming the default ports above, open your browser at:
-  http://localhost:8501/
+```bash
+  http://localhost:8501/```
 
 
 ## Repository Structure
