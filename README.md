@@ -11,7 +11,7 @@ The code and dependencies presuppose access to an **NVIDIA GPU** (e.g., Quadro R
 ## Dependencies
 
 ### Python
-All required Python packages are listed in `myenv.txt`.
+Python 3.10+. All required Python packages are listed in `myenv.txt`.
 
 ### Ollama (Required)
 This system uses **Ollama** to serve large language models locally.  
