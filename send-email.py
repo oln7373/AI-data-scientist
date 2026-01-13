@@ -1,6 +1,10 @@
+import os
+from dotenv import load_dotenv
 import os.path
 import base64
 from email.mime.text import MIMEText
+
+load_dotenv()
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -57,13 +61,16 @@ def send_email_via_gmail_api(recipient_email, subject, body):
         print(f"An error occurred: {error}")
 
 
-# Example usage:                                                                                                                                                                                                      
-if __name__ == '__main__':
-    #recipient = "monikamittal27@gmail.com"                                                                                                                                                                           
-    recipient = "ramankhurana1986@gmail.com"
-    email_subject = "Test Email from Gmail API"
-    email_body = "Hello Monika,\n\nThis is a test email sent using the Google Gmail API with Python.\n\nBest regards,\nRaman Khurana"
+# Example Usage
+if __name__ == "__main__":
+    recipient = os.getenv("EMAIL_RECIPIENT")
+    email_subject = os.getenv("EMAIL_SUBJECT", "Test Email from Gmail API")
+    email_body = os.getenv(
+        "EMAIL_BODY",
+        "Hello,\n\nThis is a test email sent using the Google Gmail API with Python.\n\nBest regards,"
+    )
+
+    if not recipient:
+        raise ValueError("EMAIL_RECIPIENT is not set in the environment")
 
     send_email_via_gmail_api(recipient, email_subject, email_body)
-
-
