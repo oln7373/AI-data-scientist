@@ -96,9 +96,9 @@ Sensitive information is not hard-coded in the source code.
    ```
 2. Edit the ```.env``` and provide your own values
    ```python
-   EMAIL_RECIPIENT=your_email@example.com
-  EMAIL_SUBJECT=Test Email from Gmail API
-  EMAIL_BODY=Hello,\n\nThis is a test email.\n\nBest regards,
+EMAIL_RECIPIENT=your_email@example.com
+EMAIL_SUBJECT=Test Email from Gmail API
+EMAIL_BODY=Hello,\n\nThis is a test email.\n\nBest regards,
   ```
 
 ## Repository Structure
