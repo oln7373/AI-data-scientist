@@ -83,6 +83,23 @@ Assuming the default ports above, open your browser at:
 http://localhost:8501/
 ```
 
+## Environment Variables
+
+This project uses environment variables for configuration (e.g., email settings).  
+Sensitive information is not hard-coded in the source code.
+
+### Setup
+
+1. Copy the example environment file:
+   ```bash
+   cp env.sample .env
+   ```
+2. Edit the ```.env``` and provide your own values
+   ```python
+   EMAIL_RECIPIENT=your_email@example.com
+  EMAIL_SUBJECT=Test Email from Gmail API
+  EMAIL_BODY=Hello,\n\nThis is a test email.\n\nBest regards,
+  ```
 
 ## Repository Structure
 
