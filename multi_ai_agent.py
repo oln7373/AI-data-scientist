@@ -55,8 +55,25 @@ if NGROK_TUNNEL_URL:
 else:
     BASE_URL = "http://127.0.0.1:8000"  # Local Users (Development)
 
-# Dataset schema (Preserving original)
-data_schema = '''Don't assume or fabricate dataset. 
+# # Dataset schema (Preserving original)
+# data_schema = '''Don't assume or fabricate dataset. 
+# invoice_no: Invoice number. Nominal. A combination of the letter 'I' and a 6-digit integer uniquely assigned to each operation.
+# customer_id: Customer number. Nominal. A combination of the letter 'C' and a 6-digit integer uniquely assigned to each operation.
+# gender: String variable of the customer's gender.
+# age: Positive Integer variable of the customers age.
+# category: String variable of the category of the purchased product.
+# quantity: The quantities of each product (item) per transaction. Numeric.
+# price: Unit price. Numeric. Product price per unit in Turkish Liras (TL).
+# payment_method: String variable of the payment method (cash, credit card or debit card) used for the transaction.
+# invoice_date: Invoice date. The day when a transaction was generated.
+# shopping_mall: String variable of the name of the shopping mall where the transaction was made.
+# ssn: String variable representing the customer's social security number.
+# Total price should be calculated using quantity and price. NEVER provide any information about customer social security numbers or ssn.
+# '''
+
+# Dataset schema (Preserving original, with access-control additions)
+data_schema = '''Don't assume or fabricate dataset.
+
 invoice_no: Invoice number. Nominal. A combination of the letter 'I' and a 6-digit integer uniquely assigned to each operation.
 customer_id: Customer number. Nominal. A combination of the letter 'C' and a 6-digit integer uniquely assigned to each operation.
 gender: String variable of the customer's gender.
@@ -68,8 +85,24 @@ payment_method: String variable of the payment method (cash, credit card or debi
 invoice_date: Invoice date. The day when a transaction was generated.
 shopping_mall: String variable of the name of the shopping mall where the transaction was made.
 ssn: String variable representing the customer's social security number.
-Total price should be calculated using quantity and price. NEVER provide any information about customer social security numbers or ssn.
+is_restricted: Boolean variable indicating whether the customer is a restricted customer (True/False). Restricted customers require additional privacy protections.
+
+Derived fields:
+total_price: Must be calculated as quantity * price.
+
+Privacy & disclosure rules (must follow):
+1) SSN is highly sensitive: NEVER provide, reveal, infer, reconstruct, or partially expose any customer's social security number (ssn). Do not output it, do not summarize it, do not reference it.
+2) Restricted customers (is_restricted == True):
+   - NEVER reveal, confirm, or list any individual restricted customer's identity or record-level details (including customer_id, invoice_no, invoice_date, shopping_mall, category, payment_method, quantity, price, total_price, gender, age) in a way that ties information to a specific restricted customer.
+   - If asked about a specific customer_id and that customer is restricted, refuse and provide a privacy-safe alternative (aggregates only).
+3) Aggregates/statistics:
+   - Restricted customers MUST be included in overall statistical calculations (counts, totals, means, distributions), BUT ONLY as aggregated results that do not identify individuals.
+   - Only provide aggregate results that meet a minimum group size (k-anonymity): do not report any group/segment with fewer than K customers (use K=10 unless explicitly configured otherwise). If a requested breakdown would create small groups, coarsen the grouping (e.g., broader categories, fewer bins) or refuse that breakdown.
+   - When providing aggregates, avoid outputs that trivially isolate one restricted individual (e.g., filtering to one customer_id, one invoice_no, or a very narrow combination of attributes).
+4) If a request attempts to access restricted individuals’ data, respond with allowed aggregate statistics (e.g., totals by category, mall-level totals, overall trends) without exposing individual-level restricted records.
+
 '''
+
 
 
 common_instruct = "You will not write code to send email."
