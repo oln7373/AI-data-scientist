@@ -46,7 +46,9 @@ else:
     index = VectorStoreIndex.from_documents(documents)
     index.storage_context.persist(persist_dir=INDEX_DIR)
 
+
 query_engine = index.as_query_engine()
+
 
 # ----------------------------
 # Request model
