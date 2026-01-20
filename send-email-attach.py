@@ -60,8 +60,11 @@ def send_email_via_gmail_api(recipient_email, subject, body, attachment_path=Non
 
 
 send_email_via_gmail_api(
-    recipient_email="ramankhurana1986@gmail.com",
-    subject="Payment Method Distribution Report",
-    body="Please find attached the payment method distribution chart.",
-    attachment_path="paper/payment_method_distribution.png"
+    recipient_email = os.getenv("EMAIL_RECIPIENT"),
+    subject = os.getenv("EMAIL_SUBJECT", "Test Email from Gmail API"),
+    body = os.getenv(
+        "EMAIL_BODY",
+        "Hello,\n\nThis is a test email sent using the Google Gmail API with Python.\n\nBest regards,"
+    ),
+    attachment_path = os.getenv("ATTACHMENT_PATH")
 )
