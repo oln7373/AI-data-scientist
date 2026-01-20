@@ -14,9 +14,11 @@ documents = SimpleDirectoryReader("data").load_data()
 
 
 Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-base-en-v1.5")
-Settings.llm = Ollama(model="llama3.1",
-                      options={"temperature": 0.3},
-                      request_timeout=460)
+Settings.llm = Ollama(
+    model="gpt-oss:20b",
+    options={"temperature": 0.3},
+    request_timeout=460
+)
 
 
 index = VectorStoreIndex.from_documents(documents)
