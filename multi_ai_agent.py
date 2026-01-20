@@ -69,21 +69,6 @@ if NGROK_TUNNEL_URL:
 else:
     BASE_URL = "http://127.0.0.1:8000"  # Local Users (Development)
 
-# # Dataset schema (Preserving original)
-# data_schema = '''Don't assume or fabricate dataset. 
-# invoice_no: Invoice number. Nominal. A combination of the letter 'I' and a 6-digit integer uniquely assigned to each operation.
-# customer_id: Customer number. Nominal. A combination of the letter 'C' and a 6-digit integer uniquely assigned to each operation.
-# gender: String variable of the customer's gender.
-# age: Positive Integer variable of the customers age.
-# category: String variable of the category of the purchased product.
-# quantity: The quantities of each product (item) per transaction. Numeric.
-# price: Unit price. Numeric. Product price per unit in Turkish Liras (TL).
-# payment_method: String variable of the payment method (cash, credit card or debit card) used for the transaction.
-# invoice_date: Invoice date. The day when a transaction was generated.
-# shopping_mall: String variable of the name of the shopping mall where the transaction was made.
-# ssn: String variable representing the customer's social security number.
-# Total price should be calculated using quantity and price. NEVER provide any information about customer social security numbers or ssn.
-# '''
 
 # Dataset schema (Preserving original, with access-control additions)
 data_schema = '''Don't assume or fabricate dataset.
@@ -440,28 +425,3 @@ def get_image(filename: str):
     safe_name = os.path.basename(filename)
     image_path = os.path.join(IMAGE_DIR, safe_name)
     return FileResponse(image_path, media_type="image/png") if os.path.exists(image_path) else {"error": "Image not found"}
-
-
-
-
-
-
-##### ✅ FastAPI endpoint to process chatbot queries
-####@router.post("/multi_ai_agent")
-####def multi_ai_agent_query(request: QueryRequest):
-####    
-####    chat_result = user_proxy.initiate_chat(
-####        manager,
-####        message=rephrasing(request.question),
-####        summary_method="last_msg",
-####    )
-####    return extract_relevant_output(chat_result.chat_history)
-####
-####
-####    
-##### ✅ FastAPI endpoint to serve generated images
-####@router.get("/get_image/{filename}")
-####def get_image(filename: str):
-####    image_path = os.path.join(IMAGE_DIR, filename)
-####    return FileResponse(image_path, media_type="image/png") if os.path.exists(image_path) else {"error": "Image not found"}
-
