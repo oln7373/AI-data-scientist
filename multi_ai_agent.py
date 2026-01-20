@@ -31,9 +31,23 @@ config_list = {"config_list": [
     }
 ]}
 
-# Directory where images are saved
+DATA_URL = "https://raw.githubusercontent.com/oln7373/AI-data-scientist/refs/heads/main/customer_shopping_data.csv"
+
 IMAGE_DIR = "output"
-os.makedirs(IMAGE_DIR, exist_ok=True)  # Ensure the folder exists
+os.makedirs(IMAGE_DIR, exist_ok=True)
+
+# Where the Executor runs (cwd for executed code)
+AGENT_CSV = "customer_shopping_data.csv"
+
+# Where the FastAPI process should write it so the Executor can see it
+SERVER_CSV_PATH = os.path.join(IMAGE_DIR, AGENT_CSV)
+
+def ensure_dataset():
+    if not os.path.exists(SERVER_CSV_PATH):
+        r = requests.get(DATA_URL, timeout=30)
+        r.raise_for_status()
+        with open(SERVER_CSV_PATH, "wb") as f:
+            f.write(r.content)
 
 # ✅ Detect whether ngrok is running (to serve images remotely)
 NGROK_TUNNEL_URL = None
@@ -159,9 +173,11 @@ executor = autogen.UserProxyAgent(
 # Group Chat Manager
 groupchat = autogen.GroupChat(
     agents=[user_proxy, filereader, summarizer, coder, viz, executor],
-    messages=[], max_round=30,
+    messages=[], 
+    # max_round=30,
+    max_round=8,
     speaker_selection_method="round_robin",
-    enable_clear_history=False,
+    enable_clear_history=True,
     send_introductions=True
 )
 
@@ -169,14 +185,21 @@ manager = autogen.GroupChatManager(
     system_message='''You are a chat manager. Fragment the task and assign it to agents based on their capabilities. 
     Example: File reading → FileReader, Dataframe summarization → Summarizer, Data manipulation → Data Scientist. 
     Don't give all tasks to a single agent. Once an agent provides code, ask the Executor agent to execute it.''',
-    is_termination_msg=lambda msg: "exitcode: 0 (execution succeeded)" in msg["content"].lower(),
+    is_termination_msg=lambda msg: (
+        isinstance(msg, dict)
+        and isinstance(msg.get("content"), str)
+        and (
+            "exitcode: 0 (execution succeeded)" in msg["content"].lower()
+            or re.search(r"\bterminate\b", msg["content"].lower()) is not None
+        )
+    ),
     groupchat=groupchat,
     llm_config=config_list,
 )
 
 
-import re
-import os
+
+
 
 def extract_relevant_output(chat_history):
     last_python_code = None
@@ -224,8 +247,7 @@ def extract_relevant_output(chat_history):
 
 
 
-import re
-import os
+
 from typing import Optional, Tuple
 from fastapi import Request
 from fastapi.responses import FileResponse
@@ -364,13 +386,17 @@ def send_email(recipient_email, subject, body):
 
 @router.post("/multi_ai_agent")
 def multi_ai_agent_query(request: QueryRequest, http_req: Request):
-    # 1) Pull possible email & clean the question for the agent
+
+    ensure_dataset()
+
     email, cleaned_question = extract_email_and_clean_prompt(request.question)
 
-    # 2) Run your agents with the cleaned question
+    # Rewrite any URL to the agent-visible filename (cwd-relative inside output/)
+    cleaned_question = re.sub(r'https?://\S+', AGENT_CSV, cleaned_question)
+
     chat_result = user_proxy.initiate_chat(
         manager,
-        message=rephrasing(cleaned_question),
+        message=cleaned_question,
         summary_method="last_msg",
     )
 
