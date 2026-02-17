@@ -24,7 +24,7 @@ def rephrasing(question):
 config_list = {"config_list": [
     {
         "model": "gpt-oss:20b", # "llama3.1:latest",
-        "base_url": "http://localhost:11434/v1",
+        "base_url": "http://localhost:11435/v1",
         "api_key": "ollama",
         "temperature": 0.0,
         "price": [0, 0],
@@ -193,19 +193,21 @@ def extract_relevant_output(chat_history):
     image_filename = None
 
     # Step 1: Find the last Python code snippet
-    for i in reversed(range(len(chat_history))):  # Iterate in reverse to get the last occurrence
-        if '```python' in chat_history[i]['content']:
-            match = re.search(r"```python\n(.*?)```", chat_history[i]['content'], re.DOTALL)
+    for i in reversed(range(len(chat_history))):
+        content = (chat_history[i].get("content") or "")
+        if '```python' in content:
+            match = re.search(r"```python\n(.*?)```", content, re.DOTALL)
             if match:
                 last_python_code = match.group(1)
                 last_code_index = i
-                break  # Stop after finding the last executed code
+                break
 
     # Step 2: Find the execution result (immediately after the code block)
     if last_code_index is not None and last_code_index + 1 < len(chat_history):
-        next_entry = chat_history[last_code_index + 1]  # The next message in chat history
-        if "exitcode:" in next_entry["content"]:  # Check if it's an execution result
-            execution_result = next_entry["content"]
+        next_entry = chat_history[last_code_index + 1]
+        next_content = (next_entry.get("content") or "")
+        if "exitcode:" in next_content:
+            execution_result = next_content
 
     # Step 3: Check for generated images in the last Python code
     if last_python_code:
@@ -215,15 +217,29 @@ def extract_relevant_output(chat_history):
 
     # Step 4: Return image if detected and exists
     if image_filename and os.path.exists(os.path.join(IMAGE_DIR, image_filename)):
-        image_url = f"/get_image/{image_filename}"  # ✅ Ensure correct API endpoint
+        image_url = f"/get_image/{image_filename}"
         return {"type": "image", "image_url": image_url}
 
     # Step 5: Return execution output if available
     if execution_result:
         return {"type": "text", "content": execution_result}
 
-    # Step 6: Return code if no executed output was found
-    return {"type": "text", "content": last_python_code or "No relevant output found."}
+    # Step 6: If no execution/code, return the last non-empty refusal/answer from agents
+    # (skip Admin/user messages; prefer assistant messages)
+    for m in reversed(chat_history):
+        name = (m.get("name") or "").strip()
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        if name == "Admin":
+            continue
+        # If it's a code block but never executed, you can still return it,
+        # but for refusals this will just pick "I'm sorry, but I can't..."
+        return {"type": "text", "content": content}
+
+    # Absolute fallback
+    return {"type": "text", "content": "No relevant output found."}
+
 
 
 
