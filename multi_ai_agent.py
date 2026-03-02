@@ -1,24 +1,18 @@
 import autogen
-import ollama
 import re
 import os
+import sys
 import requests
-from fastapi import APIRouter
+import anyio
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
+from fastapi import APIRouter, HTTPException, Request
 
 router = APIRouter()
 
 # ✅ Define Pydantic Model for Request Validation
 class QueryRequest(BaseModel):
     question: str
-
-# Function to rephrase user question
-def rephrasing(question):
-    prompt = f"Rephrase the following sentence: '{question}'. If there is a file path or variable names, don't change them; use them as it is in the rephrased prompt. Provide only one precise response, no alternative responses."
-    #response = ollama.chat(model='llama3.1', messages=[{'role': 'user', 'content': prompt}])# llama3.1 
-    response = ollama.chat(model='gpt-oss:20b', messages=[{'role': 'user', 'content': prompt}])# 
-    return response['message']['content']
 
 # Agent Configuration
 config_list = {"config_list": [
@@ -49,25 +43,6 @@ def ensure_dataset():
         with open(SERVER_CSV_PATH, "wb") as f:
             f.write(r.content)
 
-# ✅ Detect whether ngrok is running (to serve images remotely)
-NGROK_TUNNEL_URL = None
-try:
-    ngrok_response = requests.get("http://127.0.0.1:4040/api/tunnels")
-    if ngrok_response.status_code == 200:
-        ngrok_data = ngrok_response.json()
-        tunnels = ngrok_data.get("tunnels", [])
-        for tunnel in tunnels:
-            if "https://" in tunnel["public_url"]:
-                NGROK_TUNNEL_URL = tunnel["public_url"]
-                break
-except requests.exceptions.ConnectionError:
-    pass  # ngrok is not running
-
-# ✅ Determine Base URL for Image Serving
-if NGROK_TUNNEL_URL:
-    BASE_URL = NGROK_TUNNEL_URL  # Remote Users (ngrok)
-else:
-    BASE_URL = "http://127.0.0.1:8000"  # Local Users (Development)
 
 
 # Dataset schema (Preserving original, with access-control additions)
@@ -241,199 +216,89 @@ def extract_relevant_output(chat_history):
     return {"type": "text", "content": "No relevant output found."}
 
 
-
-
-
 ## Added this part for the email to user if user has shared email address in the input prompt 
 
+from email_utils import extract_email_and_clean_prompt, compose_email_payload, make_absolute_image_url
+from gmail_send import send_email
 
-
-
-from typing import Optional, Tuple
-from fastapi import Request
-from fastapi.responses import FileResponse
-
-# --- helpers ---------------------------------------------------------------
-
-EMAIL_REGEX = re.compile(r'([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)')
-
-def extract_email_and_clean_prompt(text: str) -> Tuple[Optional[str], str]:
-    """
-    Finds the first email address in the text (if any) and removes common
-    'email to <addr>' phrases so the agent gets a clean question.
-    """
-    match = EMAIL_REGEX.search(text or "")
-    email = match.group(1) if match else None
-    if not email:
-        return None, text
-
-    # remove typical patterns like "email to X", "email this to X", "and email to X"
-    cleaned = re.sub(
-        r'\b(and\s+)?(please\s+)?(also\s+)?(send|email|mail)\s+(this\s+|it\s+|results?\s+|the\s+answer\s+|to\s+)?'
-        + re.escape(email),
-        '',
-        text,
-        flags=re.IGNORECASE,
-    )
-    # collapse extra spaces
-    cleaned = re.sub(r'\s{2,}', ' ', cleaned).strip()
-    return email, cleaned or text
-
-def compose_email_payload(
-    orig_question: str,
-    result: dict,
-    absolute_image_url: Optional[str]
-) -> Tuple[str, str]:
-    """
-    Build (subject, body) from the multi-agent outcome.
-    """
-    subject = "Your requested result"
-    if result.get("type") == "image":
-        body = (
-            "Hi,\n\nHere is the result you requested.\n\n"
-            f"Question: {orig_question}\n"
-            f"Result type: image\n"
-            f"Image URL: {absolute_image_url}\n\n"
-            "Best,\nMulti-AI Agent"
-        )
-    else:
-        content = result.get("content", "")
-        body = (
-            "Hi,\n\nHere is the result you requested.\n\n"
-            f"Question: {orig_question}\n"
-            "Result:\n"
-            f"{content}\n\n"
-            "Best,\nMulti-AI Agent"
-        )
-    return subject, body
-
-def make_absolute_image_url(request: Request, rel_url: str) -> str:
-    """
-    Converts '/get_image/plot.png' → 'https://host/get_image/plot.png'
-    """
-    return str(request.url_for("get_image", filename=rel_url.rsplit("/", 1)[-1]))
-
-
-
-
-
-def send_email(recipient_email, subject, body):
-
-    import os.path
-    import base64
-    from email.mime.text import MIMEText
-    
-    from google.auth.transport.requests import Request
-    from google.oauth2.credentials import Credentials
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    from googleapiclient.discovery import build
-    from googleapiclient.errors import HttpError
-    
-    # If modifying these scopes, delete the file token.json.                                                                                                                                                              
-    # The 'gmail.send' scope is required to send emails.                                                                                                                                                                  
-    SCOPES = ['https://www.googleapis.com/auth/gmail.send']
-
-
-    """Sends an email using the Gmail API.                                                                                                                                                                            
-                                                                                                                                                                                                                      
-    Args:                                                                                                                                                                                                             
-        recipient_email (str): The email address of the recipient.                                                                                                                                                    
-        subject (str): The subject of the email.                                                                                                                                                                      
-        body (str): The body content of the email.                                                                                                                                                                    
-    """
-    creds = None
-    # The file token.json stores the user's access and refresh tokens, and is                                                                                                                                         
-    # created automatically when the authorization flow completes for the first time.                                                                                                                                 
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    # If there are no (valid) credentials available, let the user log in.                                                                                                                                             
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            # The 'credentials.json' file is the one you downloaded from Google Cloud Console.                                                                                                                        
-            flow = InstalledAppFlow.from_client_secrets_file(
-                'credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        # Save the credentials for the next run                                                                                                                                                                       
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-
-    try:
-        service = build('gmail', 'v1', credentials=creds)
-
-        # Create the email message                                                                                                                                                                                    
-        message = MIMEText(body)
-        message['to'] = recipient_email
-        message['subject'] = subject
-        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
-
-        # Send the message                                                                                                                                                                                            
-        send_message = (service.users().messages().send(
-            userId="me", body={"raw": raw_message}).execute())
-        print(f"Message Id: {send_message['id']}")
-        print(f"Email sent successfully to {recipient_email}")
-
-    except HttpError as error:
-        print(f"An error occurred: {error}")
-
-    
-
-    
 # --- your existing extractor (unchanged) -----------------------------------
 # def extract_relevant_output(chat_history): ... (as you wrote)
 
 # --- updated route ---------------------------------------------------------
 
 @router.post("/multi_ai_agent")
-def multi_ai_agent_query(request: QueryRequest, http_req: Request):
+async def multi_ai_agent_query(request: QueryRequest, http_req: Request):
 
-    ensure_dataset()
+    # 1) MCP must be available (started by FastAPI lifespan)
+    mcp = getattr(http_req.app.state, "mcp", None)
+    
+    # Kill backend if MCP not available
+    if mcp is None:
+        raise HTTPException(status_code=503, detail="MCP not available")
 
+    # Optional smoke test (good while integrating; remove later)
+    # if mcp is not None:
+    #     res = await mcp.call_tool("ping", {"message": "hello"})
+    #     print(getattr(res.content[0], "text", ""), file=sys.stderr)
+
+    # 2) Ensure dataset (don’t block the event loop)
+    await anyio.to_thread.run_sync(ensure_dataset)
+
+    # 3) Clean question + extract email
     email, cleaned_question = extract_email_and_clean_prompt(request.question)
 
     # Rewrite any URL to the agent-visible filename (cwd-relative inside output/)
     cleaned_question = re.sub(r'https?://\S+', AGENT_CSV, cleaned_question)
 
-    chat_result = user_proxy.initiate_chat(
-        manager,
-        message=cleaned_question,
-        summary_method="last_msg",
-    )
+    # 4) Run AutoGen (this is blocking; push to a thread) + add a hard timeout
+    try:
+        with anyio.fail_after(180):  # seconds; adjust as needed
+            chat_result = await anyio.to_thread.run_sync(
+                lambda: user_proxy.initiate_chat(
+                    manager,
+                    message=cleaned_question,
+                    summary_method="last_msg",
+                )
+            )
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="Agent timed out while processing the request")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent execution failed: {e}")
 
-    # 3) Decide what to return to UI (image/text)
+    # 5) Decide what to return to UI (image/text)
     result = extract_relevant_output(chat_result.chat_history)
 
-    # 4) If it's an image, upgrade the relative URL to an absolute URL for email
+    # 6) Absolute URL for emailed images
     absolute_image_url = None
     if result.get("type") == "image" and "image_url" in result:
         try:
             absolute_image_url = make_absolute_image_url(http_req, result["image_url"])
         except Exception:
-            # fallback to relative if something odd happens
             absolute_image_url = result["image_url"]
 
-    # 5) If user asked to email, send it
+    # 7) If user asked to email, call MCP tool
     emailed_to = None
-    if email:
+    if email and mcp is not None:
         subject, body = compose_email_payload(
             orig_question=request.question,
             result=result,
             absolute_image_url=absolute_image_url
         )
+
         try:
-            send_email(recipient_email=email, subject=subject, body=body)
+            await mcp.call_tool(
+                "send_email",
+                {"recipient_email": email, "subject": subject, "body": body},
+            )
             emailed_to = email
         except Exception as e:
-            # Don’t fail the UI; just report that email didn’t go out
             emailed_to = f"ERROR: {e}"
 
-    # 6) Return normal payload to frontend, plus an FYI about emailing
-    # (keeps the UI unchanged but gives you visibility in logs/DevTools)
+    # 8) ALWAYS return payload (include emailed_to if present)
     out = dict(result)
     if emailed_to:
         out["emailed_to"] = emailed_to
-    return result #out
+    return out
 
 # Image route (unchanged)
 @router.get("/get_image/{filename}", name="get_image")
@@ -441,3 +306,12 @@ def get_image(filename: str):
     safe_name = os.path.basename(filename)
     image_path = os.path.join(IMAGE_DIR, safe_name)
     return FileResponse(image_path, media_type="image/png") if os.path.exists(image_path) else {"error": "Image not found"}
+
+# MCP debug
+@router.get("/mcp/tools")
+async def mcp_tools(http_req: Request):
+    mcp = getattr(http_req.app.state, "mcp", None)
+    if mcp is None:
+        raise HTTPException(503, "MCP not available")
+    res = await mcp.list_tools()
+    return {"tools": [t.name for t in res.tools]}
