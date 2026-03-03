@@ -22,6 +22,11 @@ mcp = FastMCP("Allstate Tools", json_response=True)
 def ping(message: str = "hello") -> str:
     return f"pong: {message}"
 
+@mcp.tool(description="Add two numbers together and return the result.")
+def add_numbers(a: float, b: float) -> float:
+    return a + b
+
+# This function is part of the sned_email tool and hence is in the mcp server file
 def _gmail_service():
     """
     Local helper: load OAuth token + build Gmail service.
@@ -45,6 +50,7 @@ def _gmail_service():
             token.write(creds.to_json())
 
     return build("gmail", "v1", credentials=creds)
+
 
 @mcp.tool(description="Compose a plain-text email body from subject/body fields (no sending).")
 def compose_email(recipient_email: str, subject: str, body: str) -> dict:
@@ -79,9 +85,23 @@ def send_email(recipient_email: str, subject: str, body: str) -> str:
         raise RuntimeError(f"Gmail API error: {e}") from e
 
 
+
+
+
+
+
+#  __  __       _         ______               _   _             
+# |  \/  | __ _(_)_ __   |  ____|   _ _ __ ___| |_(_) ___  _ __  
+# | |\/| |/ _` | | '_ \  | |_ | | | | '__/ __| __| |/ _ \| '_ \ 
+# | |  | | (_| | | | | | |  _|| |_| | | | (__| |_| | (_) | | | |
+# |_|  |_|\__,_|_|_| |_| |_|   \__,_|_|  \___|\__|_|\___/|_| |_|
+
+
+
+
 if __name__ == "__main__":
     # Serves at http://localhost:8000/mcp by default for streamable-http
     # (exact host/port can be configured via .env if you want)
-    mcp.settings.port = int(os.getenv("MCP_PORT", "8000"))
+    mcp.settings.port = int(os.getenv("MCP_PORT", "8005"))
     mcp.settings.host = os.getenv("MCP_HOST", "127.0.0.1")
     mcp.run(transport="streamable-http")

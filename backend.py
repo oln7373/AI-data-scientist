@@ -3,40 +3,43 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 import os
 from dotenv import load_dotenv
+import anyio
 
+# Routers
 from multi_ai_agent import router as multi_ai_agent_router
-from summarizer import summarizer_router
-from rag import rag_router
+# from summarizer import summarizer_router
+# from rag import rag_router
 
-from mcp_manager import MCPManager
+from mcp_http_client import MCPHttpClient
 
 load_dotenv()
 
 mcp_port = os.getenv("MCP_PORT", "8005")
 mcp_url = f"http://127.0.0.1:{mcp_port}/mcp"
-mcp = MCPManager(mcp_url)
+mcp_http = MCPHttpClient(mcp_url)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await mcp.start()
-    app.state.mcp = mcp
-    try:
-        yield
-    finally:
-        await mcp.stop()
+    with anyio.fail_after(10):
+        await mcp_http.initialize()
+    app.state.mcp_http = mcp_http
+    yield
 
 app = FastAPI(root_path="/api", lifespan=lifespan)
 
 app.include_router(multi_ai_agent_router)
-app.include_router(summarizer_router)
-app.include_router(rag_router)
+# app.include_router(summarizer_router)
+# app.include_router(rag_router)
 
-# everything below this can stay the same:
+# -------------------------
+# Report / File Serving
+# -------------------------
+
 os.makedirs("reports", exist_ok=True)
 
 reports = {
     "Transformer, LLM, RAG and Multi-Model": "Report1.pdf",
-    "Agentic AI: A complete guide": "Report2.pdf"
+    "Agentic AI: A complete guide": "Report2.pdf",
 }
 
 pitch_deck_file = "genAI-insights-hub.pdf"

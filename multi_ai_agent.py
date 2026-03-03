@@ -1,42 +1,212 @@
-import autogen
-import re
+"""
+multi_ai_agent.py
+
+This file provides:
+1) /mcp_add_demo      (simple MCP tool demo)
+2) /mcp_agent_add     (LLM tool-calling via Ollama -> allowlist -> MCP)
+3) /mcp_tools         (list tools from MCP server)
+4) /multi_ai_agent    (RESTORED AutoGen multi-agent "data scientist" pipeline,
+                       with OPTIONAL email sending via MCP send_email tool)
+
+Design:
+- Keep the old AutoGen pipeline behavior (code-gen + Executor).
+- Keep MCP allowlist enforcement on the backend.
+- Email side-effects go through MCP (send_email tool), not direct Gmail code.
+"""
+
 import os
+import re
+import json
 import sys
+import httpx
 import requests
 import anyio
-from pydantic import BaseModel
-from fastapi.responses import FileResponse
+
+from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+
+# AutoGen (old multi-agent pipeline)
+import autogen
+
+# Email helpers (parsing + formatting)
+from email_utils import (
+    extract_email_and_clean_prompt,
+    compose_email_payload,
+    make_absolute_image_url,
+)
+
+load_dotenv()
 
 router = APIRouter()
 
-# ✅ Define Pydantic Model for Request Validation
+# -----------------------------
+# Backend policy + Ollama config
+# -----------------------------
+ALLOWED_TOOLS = set(
+    t.strip()
+    for t in os.getenv("ALLOWED_TOOLS", "").split(",")
+    if t.strip()
+)
+
+if not ALLOWED_TOOLS:
+    raise RuntimeError("ALLOWED_TOOLS not configured in .env")
+
+OLLAMA_PORT = os.getenv("OLLAMA_PORT", "11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:20b")
+OLLAMA_URL = f"http://localhost:{OLLAMA_PORT}/v1/chat/completions"
+
+
 class QueryRequest(BaseModel):
     question: str
 
-# Agent Configuration
-config_list = {"config_list": [
-    {
-        "model": "gpt-oss:20b", # "llama3.1:latest",
-        "base_url": "http://localhost:11435/v1",
-        "api_key": "ollama",
-        "temperature": 0.0,
-        "price": [0, 0],
-    }
-]}
 
+# -----------------------------
+# MCP demo endpoints (keep)
+# -----------------------------
+@router.post("/mcp_add_demo")
+async def mcp_add_demo(request: QueryRequest, http_req: Request):
+    mcp_http = getattr(http_req.app.state, "mcp_http", None)
+    if mcp_http is None:
+        raise HTTPException(status_code=503, detail="MCP HTTP client not available")
+
+    m = re.search(r"(-?\d+(?:\.\d+)?)\s*\+\s*(-?\d+(?:\.\d+)?)", request.question)
+    if not m:
+        raise HTTPException(status_code=400, detail="Provide a question containing something like '5 + 7'")
+
+    a = float(m.group(1))
+    b = float(m.group(2))
+
+    # Allowlist check
+    if "add_numbers" not in ALLOWED_TOOLS:
+        raise HTTPException(status_code=400, detail="Tool not allowed by policy: add_numbers")
+
+    return await mcp_http.tool_call("add_numbers", {"a": a, "b": b})
+
+
+@router.post("/mcp_agent_add")
+async def mcp_agent_add(request: QueryRequest, http_req: Request):
+    mcp_http = getattr(http_req.app.state, "mcp_http", None)
+    if mcp_http is None:
+        raise HTTPException(status_code=503, detail="MCP HTTP client not available")
+
+    system = (
+        "You are a tool-using agent.\n"
+        "Available tools:\n"
+        "- add_numbers(a, b)\n"
+        "- ping(message)\n"
+        "Rules:\n"
+        "- If the user asks to add numbers → call add_numbers.\n"
+        "- If the user asks for a health check or connectivity test → call ping.\n"
+        "Use tool calling when possible.\n"
+    )
+
+    async with httpx.AsyncClient(trust_env=False, timeout=60.0) as client:
+        resp = await client.post(
+            OLLAMA_URL,
+            headers={"Content-Type": "application/json"},
+            json={
+                "model": OLLAMA_MODEL,
+                "temperature": 0.0,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": request.question},
+                ],
+            },
+        )
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Ollama error {resp.status_code}: {resp.text[:1000]}")
+
+    data = resp.json()
+
+    try:
+        msg = data["choices"][0]["message"]
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Unexpected Ollama response shape: {e}. Raw={str(data)[:1000]}")
+
+    # ---- Preferred: OpenAI-style tool_calls ----
+    tool_calls = msg.get("tool_calls") or []
+    if tool_calls:
+        try:
+            fn = tool_calls[0]["function"]["name"]
+            arg_str = tool_calls[0]["function"].get("arguments", "{}")
+            args = json.loads(arg_str) if isinstance(arg_str, str) else (arg_str or {})
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to parse tool_calls: {e}. Raw={str(tool_calls)[:1000]}")
+
+        if fn not in ALLOWED_TOOLS:
+            raise HTTPException(status_code=400, detail=f"Tool not allowed by policy: {fn}")
+
+        tool_resp = await mcp_http.tool_call(fn, args)
+
+        return {
+            "ollama_used": {"url": OLLAMA_URL, "model": OLLAMA_MODEL},
+            "llm_finish_reason": data["choices"][0].get("finish_reason"),
+            "llm_tool_call": {"tool": fn, "args": args},
+            "mcp_response": tool_resp,
+            "allowed_tools": sorted(ALLOWED_TOOLS),
+        }
+
+    # ---- Fallback: JSON in content ----
+    content = (msg.get("content") or "").strip()
+    if not content:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Ollama returned neither tool_calls nor content. Raw response: {str(data)[:1000]}",
+        )
+
+    try:
+        plan = json.loads(content)
+        tool = plan["tool"]
+        args = plan["args"]
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"LLM did not return valid JSON plan. Got: {content!r}. Error: {e}")
+
+    if tool not in ALLOWED_TOOLS:
+        raise HTTPException(status_code=400, detail=f"Tool not allowed by policy: {tool}")
+
+    tool_resp = await mcp_http.tool_call(tool, args)
+
+    return {
+        "ollama_used": {"url": OLLAMA_URL, "model": OLLAMA_MODEL},
+        "llm_raw_content": content,
+        "llm_plan": plan,
+        "mcp_response": tool_resp,
+        "allowed_tools": sorted(ALLOWED_TOOLS),
+    }
+
+
+@router.get("/mcp_tools")
+async def mcp_tools(http_req: Request):
+    mcp_http = getattr(http_req.app.state, "mcp_http", None)
+    if mcp_http is None:
+        raise HTTPException(503, "MCP HTTP client not available")
+    return await mcp_http.tools_list()
+
+
+# ============================================================
+# RESTORED: Multi-agent "Agentic AI Data Scientist" pipeline
+# ============================================================
+
+# -----------------------------
+# Dataset plumbing (old behavior)
+# -----------------------------
 DATA_URL = "https://raw.githubusercontent.com/oln7373/AI-data-scientist/refs/heads/main/customer_shopping_data.csv"
 
 IMAGE_DIR = "output"
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
-# Where the Executor runs (cwd for executed code)
 AGENT_CSV = "customer_shopping_data.csv"
-
-# Where the FastAPI process should write it so the Executor can see it
 SERVER_CSV_PATH = os.path.join(IMAGE_DIR, AGENT_CSV)
 
+
 def ensure_dataset():
+    """
+    Download dataset to output/customer_shopping_data.csv so that
+    AutoGen's Executor (work_dir=output) can read it by filename.
+    """
     if not os.path.exists(SERVER_CSV_PATH):
         r = requests.get(DATA_URL, timeout=30)
         r.raise_for_status()
@@ -44,9 +214,8 @@ def ensure_dataset():
             f.write(r.content)
 
 
-
-# Dataset schema (Preserving original, with access-control additions)
-data_schema = '''Don't assume or fabricate dataset.
+# Dataset schema + privacy rules (kept from your old pipeline)
+data_schema = r"""Don't assume or fabricate dataset.
 
 invoice_no: Invoice number. Nominal. A combination of the letter 'I' and a 6-digit integer uniquely assigned to each row.
 customer_id: Customer identifier. Nominal. A token of the form 3 uppercase letters followed by a 6-digit integer (regex: [A-Z]{3}\d{6}) uniquely assigned to each row.
@@ -74,13 +243,28 @@ Privacy & disclosure rules (must follow):
    - Only provide aggregate results that meet a minimum group size (k-anonymity): do not report any group/segment with fewer than K customers (use K=10 unless explicitly configured otherwise). If a requested breakdown would create small groups, coarsen the grouping (e.g., broader categories, fewer bins) or refuse that breakdown.
    - When providing aggregates, avoid outputs that trivially isolate one restricted individual (e.g., filtering to one customer_id, one invoice_no, or a very narrow combination of attributes).
 4) If a request attempts to access restricted individuals’ data, respond with allowed aggregate statistics (e.g., totals by category, mall-level totals, overall trends) without exposing individual-level restricted records.
-
-'''
-
-
+"""
 
 common_instruct = "You will not write code to send email."
-# Define Agents (Using Original Prompts)
+
+# -----------------------------
+# AutoGen: LLM config (Ollama OpenAI-compatible endpoint)
+# -----------------------------
+config_list = {
+    "config_list": [
+        {
+            "model": OLLAMA_MODEL,
+            "base_url": f"http://localhost:{OLLAMA_PORT}/v1",
+            "api_key": "ollama",
+            "temperature": 0.0,
+            "price": [0, 0],
+        }
+    ]
+}
+
+# -----------------------------
+# AutoGen agents (old behavior)
+# -----------------------------
 user_proxy = autogen.UserProxyAgent(
     name="Admin",
     system_message="You are Admin, a proxy for the human user.",
@@ -89,34 +273,50 @@ user_proxy = autogen.UserProxyAgent(
 )
 
 coder = autogen.AssistantAgent(
-    name="Data Scientist",
+    name="DataScientist",
     llm_config=config_list,
-    system_message=f"""You are a senior data scientist expert in writing clean python code for data analytics. 
-    Use the code from FileReader and Summarizer to answer the question being asked. When using existing code from group chat ensure the correnctness of code per initial question. You will provide only code; no text statements. 
-    Don't provide unnecessary code. The schema for dataset is {data_schema}. {common_instruct} """,
+    system_message=f"""You are a senior data scientist expert in writing clean python code for data analytics.
+Use the code from FileReader and Summarizer to answer the question being asked.
+When using existing code from group chat ensure the correctness of code per initial question.
+You will provide only code; no text statements.
+Don't provide unnecessary code.
+The schema for dataset is {data_schema}.
+{common_instruct}""",
 )
 
 filereader = autogen.AssistantAgent(
     name="FileReader",
     llm_config=config_list,
-    system_message=f"""Read dataset and check its consistency. The schema for dataset is {data_schema}. 
-    You should write Python code to read the file and print the shape of the dataframe. 
-    If the shape is non-zero, print 'File reading successful'. Strictly no statements, only code. Invoice number and Customer ID are personal information and should not be saared or read while file reading. {common_instruct}""",
+    system_message=f"""Read dataset and check its consistency. The schema for dataset is {data_schema}.
+You should write Python code to read the file and print the shape of the dataframe.
+If the shape is non-zero, print 'File reading successful'.
+Strictly no statements, only code.
+Invoice number and Customer ID are personal information and should not be shared or read while file reading.
+{common_instruct}""",
 )
 
-summarizer = autogen.AssistantAgent(
+summarizer_agent = autogen.AssistantAgent(
     name="Summarizer",
     llm_config=config_list,
-    system_message=f"""You are a dataset summarizer agent. You will use the code already developed by FileReader and work on top of it. 
-    If summary is not being asked, don't write any code, simply skip your turn. Given the file content of a dataset, 
-    produce a concise summary that includes key properties like number of rows, columns, and any significant statistics. 
-    You will only provide code, no statements. The schema for dataset is {data_schema}. {common_instruct}""",
+    system_message=f"""You are a dataset summarizer agent. You will use the code already developed by FileReader and work on top of it.
+If summary is not being asked, don't write any code, simply skip your turn.
+Given the file content of a dataset, produce a concise summary that includes key properties like number of rows, columns, and any significant statistics.
+You will only provide code, no statements.
+The schema for dataset is {data_schema}.
+{common_instruct}""",
 )
 
 viz = autogen.AssistantAgent(
     name="Visualization",
     llm_config=config_list,
-    system_message=f"""You are a data visualization expert. You write code for data visualization that is as per the rules of visualization. The text, labels, legend, marker are all up to the mark in the visualization. The visualization code has to be added only if it is relevant in the original question. You will use the code already developed by other agents. You will only provide code, no statements. The visualization should be always saved in png format.  The schema for dataset is {data_schema}. {common_instruct}""",
+    system_message=f"""You are a data visualization expert.
+You write code for data visualization that is as per the rules of visualization.
+The visualization code has to be added only if it is relevant in the original question.
+You will use the code already developed by other agents.
+You will only provide code, no statements.
+The visualization should be always saved in png format.
+The schema for dataset is {data_schema}.
+{common_instruct}""",
 )
 
 executor = autogen.UserProxyAgent(
@@ -125,26 +325,26 @@ executor = autogen.UserProxyAgent(
     human_input_mode="NEVER",
     code_execution_config={
         "last_n_messages": 3,
-        "work_dir": IMAGE_DIR,  # ✅ Ensures code is executed in the "paper" folder
+        "work_dir": IMAGE_DIR,
         "use_docker": False,
     },
 )
 
-# Group Chat Manager
 groupchat = autogen.GroupChat(
-    agents=[user_proxy, filereader, summarizer, coder, viz, executor],
-    messages=[], 
-    # max_round=30,
+    agents=[user_proxy, filereader, summarizer_agent, coder, viz, executor],
+    messages=[],
     max_round=8,
     speaker_selection_method="round_robin",
     enable_clear_history=True,
-    send_introductions=True
+    send_introductions=True,
 )
 
 manager = autogen.GroupChatManager(
-    system_message='''You are a chat manager. Fragment the task and assign it to agents based on their capabilities. 
-    Example: File reading → FileReader, Dataframe summarization → Summarizer, Data manipulation → Data Scientist. 
-    Don't give all tasks to a single agent. Once an agent provides code, ask the Executor agent to execute it.''',
+    system_message=(
+        "You are a chat manager. Fragment the task and assign it to agents based on their capabilities.\n"
+        "Example: File reading → FileReader, Dataframe summarization → Summarizer, Data manipulation → Data Scientist.\n"
+        "Don't give all tasks to a single agent. Once an agent provides code, ask the Executor agent to execute it."
+    ),
     is_termination_msg=lambda msg: (
         isinstance(msg, dict)
         and isinstance(msg.get("content"), str)
@@ -158,49 +358,50 @@ manager = autogen.GroupChatManager(
 )
 
 
-
-
-
 def extract_relevant_output(chat_history):
+    """
+    Heuristic:
+    - If the last executed code produced an image (plt.savefig), return the image endpoint.
+    - Else if we have an execution result line (exitcode), return it.
+    - Else return the last non-empty assistant message (non-Admin).
+    """
     last_python_code = None
     last_code_index = None
     execution_result = None
     image_filename = None
 
-    # Step 1: Find the last Python code snippet
+    # 1) Find last python code
     for i in reversed(range(len(chat_history))):
         content = (chat_history[i].get("content") or "")
-        if '```python' in content:
+        if "```python" in content:
             match = re.search(r"```python\n(.*?)```", content, re.DOTALL)
             if match:
                 last_python_code = match.group(1)
                 last_code_index = i
                 break
 
-    # Step 2: Find the execution result (immediately after the code block)
+    # 2) Execution result after code block
     if last_code_index is not None and last_code_index + 1 < len(chat_history):
         next_entry = chat_history[last_code_index + 1]
         next_content = (next_entry.get("content") or "")
-        if "exitcode:" in next_content:
+        if "exitcode:" in next_content.lower():
             execution_result = next_content
 
-    # Step 3: Check for generated images in the last Python code
+    # 3) Detect image saved
     if last_python_code:
         match = re.search(r'plt\.savefig\(["\'](.*?)["\']\)', last_python_code)
         if match:
             image_filename = match.group(1)
 
-    # Step 4: Return image if detected and exists
+    # 4) If image exists, return it
     if image_filename and os.path.exists(os.path.join(IMAGE_DIR, image_filename)):
-        image_url = f"/get_image/{image_filename}"
-        return {"type": "image", "image_url": image_url}
+        return {"type": "image", "image_url": f"/get_image/{os.path.basename(image_filename)}"}
 
-    # Step 5: Return execution output if available
+    # 5) Otherwise return execution output
     if execution_result:
         return {"type": "text", "content": execution_result}
 
-    # Step 6: If no execution/code, return the last non-empty refusal/answer from agents
-    # (skip Admin/user messages; prefer assistant messages)
+    # 6) Otherwise return last assistant message (skip Admin)
     for m in reversed(chat_history):
         name = (m.get("name") or "").strip()
         content = (m.get("content") or "").strip()
@@ -208,51 +409,37 @@ def extract_relevant_output(chat_history):
             continue
         if name == "Admin":
             continue
-        # If it's a code block but never executed, you can still return it,
-        # but for refusals this will just pick "I'm sorry, but I can't..."
         return {"type": "text", "content": content}
 
-    # Absolute fallback
     return {"type": "text", "content": "No relevant output found."}
 
 
-## Added this part for the email to user if user has shared email address in the input prompt 
-
-from email_utils import extract_email_and_clean_prompt, compose_email_payload, make_absolute_image_url
-from gmail_send import send_email
-
-# --- your existing extractor (unchanged) -----------------------------------
-# def extract_relevant_output(chat_history): ... (as you wrote)
-
-# --- updated route ---------------------------------------------------------
-
 @router.post("/multi_ai_agent")
 async def multi_ai_agent_query(request: QueryRequest, http_req: Request):
+    """
+    Restored old multi-agent pipeline.
 
-    # 1) MCP must be available (started by FastAPI lifespan)
-    mcp = getattr(http_req.app.state, "mcp", None)
-    
-    # Kill backend if MCP not available
-    if mcp is None:
-        raise HTTPException(status_code=503, detail="MCP not available")
+    Optional behavior:
+    - If user includes an email address in the prompt, we will email the result
+      via MCP send_email tool (ONLY if allowed by ALLOWED_TOOLS).
+    """
+    # MCP client must exist
+    mcp_http = getattr(http_req.app.state, "mcp_http", None)
+    if mcp_http is None:
+        raise HTTPException(status_code=503, detail="MCP HTTP client not available")
 
-    # Optional smoke test (good while integrating; remove later)
-    # if mcp is not None:
-    #     res = await mcp.call_tool("ping", {"message": "hello"})
-    #     print(getattr(res.content[0], "text", ""), file=sys.stderr)
-
-    # 2) Ensure dataset (don’t block the event loop)
+    # Ensure dataset without blocking loop
     await anyio.to_thread.run_sync(ensure_dataset)
 
-    # 3) Clean question + extract email
+    # Extract email + clean question
     email, cleaned_question = extract_email_and_clean_prompt(request.question)
 
-    # Rewrite any URL to the agent-visible filename (cwd-relative inside output/)
-    cleaned_question = re.sub(r'https?://\S+', AGENT_CSV, cleaned_question)
+    # Rewrite any URL into agent-visible filename
+    cleaned_question = re.sub(r"https?://\S+", AGENT_CSV, cleaned_question)
 
-    # 4) Run AutoGen (this is blocking; push to a thread) + add a hard timeout
+    # Run AutoGen (blocking) in a thread with timeout
     try:
-        with anyio.fail_after(180):  # seconds; adjust as needed
+        with anyio.fail_after(180):
             chat_result = await anyio.to_thread.run_sync(
                 lambda: user_proxy.initiate_chat(
                     manager,
@@ -265,53 +452,47 @@ async def multi_ai_agent_query(request: QueryRequest, http_req: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {e}")
 
-    # 5) Decide what to return to UI (image/text)
+    # Decide what to return
     result = extract_relevant_output(chat_result.chat_history)
 
-    # 6) Absolute URL for emailed images
-    absolute_image_url = None
-    if result.get("type") == "image" and "image_url" in result:
-        try:
-            absolute_image_url = make_absolute_image_url(http_req, result["image_url"])
-        except Exception:
-            absolute_image_url = result["image_url"]
-
-    # 7) If user asked to email, call MCP tool
+    # If email present, send via MCP (side-effect)
     emailed_to = None
-    if email and mcp is not None:
-        subject, body = compose_email_payload(
-            orig_question=request.question,
-            result=result,
-            absolute_image_url=absolute_image_url
-        )
+    if email:
+        if "send_email" not in ALLOWED_TOOLS:
+            emailed_to = "ERROR: send_email not allowed by policy (ALLOWED_TOOLS)"
+        else:
+            absolute_image_url = None
+            if result.get("type") == "image" and "image_url" in result:
+                try:
+                    absolute_image_url = make_absolute_image_url(http_req, result["image_url"])
+                except Exception:
+                    absolute_image_url = result["image_url"]
 
-        try:
-            await mcp.call_tool(
-                "send_email",
-                {"recipient_email": email, "subject": subject, "body": body},
+            subject, body = compose_email_payload(
+                orig_question=request.question,
+                result=result,
+                absolute_image_url=absolute_image_url,
             )
-            emailed_to = email
-        except Exception as e:
-            emailed_to = f"ERROR: {e}"
 
-    # 8) ALWAYS return payload (include emailed_to if present)
+            try:
+                await mcp_http.tool_call(
+                    "send_email",
+                    {"recipient_email": email, "subject": subject, "body": body},
+                )
+                emailed_to = email
+            except Exception as e:
+                emailed_to = f"ERROR: {e}"
+
     out = dict(result)
     if emailed_to:
         out["emailed_to"] = emailed_to
     return out
 
-# Image route (unchanged)
+
 @router.get("/get_image/{filename}", name="get_image")
 def get_image(filename: str):
     safe_name = os.path.basename(filename)
     image_path = os.path.join(IMAGE_DIR, safe_name)
-    return FileResponse(image_path, media_type="image/png") if os.path.exists(image_path) else {"error": "Image not found"}
-
-# MCP debug
-@router.get("/mcp/tools")
-async def mcp_tools(http_req: Request):
-    mcp = getattr(http_req.app.state, "mcp", None)
-    if mcp is None:
-        raise HTTPException(503, "MCP not available")
-    res = await mcp.list_tools()
-    return {"tools": [t.name for t in res.tools]}
+    if not os.path.exists(image_path):
+        return {"error": "Image not found"}
+    return FileResponse(image_path, media_type="image/png")
