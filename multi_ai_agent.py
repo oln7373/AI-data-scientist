@@ -195,7 +195,7 @@ async def mcp_tools(http_req: Request):
 # -----------------------------
 DATA_URL = "https://raw.githubusercontent.com/oln7373/AI-data-scientist/refs/heads/main/customer_shopping_data.csv"
 
-IMAGE_DIR = "output"
+IMAGE_DIR = "data"
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
 AGENT_CSV = "customer_shopping_data.csv"
@@ -204,8 +204,8 @@ SERVER_CSV_PATH = os.path.join(IMAGE_DIR, AGENT_CSV)
 
 def ensure_dataset():
     """
-    Download dataset to output/customer_shopping_data.csv so that
-    AutoGen's Executor (work_dir=output) can read it by filename.
+    Download dataset to data/customer_shopping_data.csv so that
+    AutoGen's Executor (work_dir=data) can read it by filename.
     """
     if not os.path.exists(SERVER_CSV_PATH):
         r = requests.get(DATA_URL, timeout=30)
@@ -245,7 +245,10 @@ Privacy & disclosure rules (must follow):
 4) If a request attempts to access restricted individuals’ data, respond with allowed aggregate statistics (e.g., totals by category, mall-level totals, overall trends) without exposing individual-level restricted records.
 """
 
-common_instruct = "You will not write code to send email."
+common_instruct = (
+  "Do not write code to send email. "
+  "If the user requests email delivery, note that the backend will send it automatically."
+)
 
 # -----------------------------
 # AutoGen: LLM config (Ollama OpenAI-compatible endpoint)

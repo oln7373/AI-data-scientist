@@ -55,7 +55,7 @@ def _gmail_service():
 @mcp.tool(description="Compose a plain-text email body from subject/body fields (no sending).")
 def compose_email(recipient_email: str, subject: str, body: str) -> dict:
     """
-    Separating compose vs send is useful for the risk Jenny mentioned:
+    Separating compose vs send is useful for the risk mentioned:
     you can log/review compose output before calling send.
     """
     return {
