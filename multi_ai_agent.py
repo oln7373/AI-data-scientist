@@ -6,18 +6,21 @@ This file provides:
 2) /mcp_agent_add     (LLM tool-calling via Ollama -> allowlist -> MCP)
 3) /mcp_tools         (list tools from MCP server)
 4) /multi_ai_agent    (RESTORED AutoGen multi-agent "data scientist" pipeline,
-                       with OPTIONAL email sending via MCP send_email tool)
+                       with TRUE tool-calling via MCP-backed AutoGen tools,
+                       and OPTIONAL email sending via MCP send_email tool)
 
 Design:
 - Keep the old AutoGen pipeline behavior (code-gen + Executor).
 - Keep MCP allowlist enforcement on the backend.
 - Email side-effects go through MCP (send_email tool), not direct Gmail code.
+- For /multi_ai_agent: expose MCP tools to AutoGen as real callable tools.
+  The tool implementation bounces from AutoGen's worker thread back to the
+  FastAPI event loop using anyio.from_thread.run(...)
 """
 
 import os
 import re
 import json
-import sys
 import httpx
 import requests
 import anyio
@@ -26,6 +29,8 @@ from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+from response_extractor import extract_relevant_output
 
 # AutoGen (old multi-agent pipeline)
 import autogen
@@ -246,8 +251,8 @@ Privacy & disclosure rules (must follow):
 """
 
 common_instruct = (
-  "Do not write code to send email. "
-  "If the user requests email delivery, note that the backend will send it automatically."
+    "Do not write code to send email. "
+    "If the user requests email delivery, note that the backend will send it automatically."
 )
 
 # -----------------------------
@@ -266,7 +271,7 @@ config_list = {
 }
 
 # -----------------------------
-# AutoGen agents (old behavior)
+# AutoGen agents (tools-first policy)
 # -----------------------------
 user_proxy = autogen.UserProxyAgent(
     name="Admin",
@@ -278,53 +283,130 @@ user_proxy = autogen.UserProxyAgent(
 coder = autogen.AssistantAgent(
     name="DataScientist",
     llm_config=config_list,
-    system_message=f"""You are a senior data scientist expert in writing clean python code for data analytics.
+    system_message=f"""
+TOOLS-FIRST POLICY (CRITICAL):
+- Prefer MCP tool calls over writing Python whenever a suitable tool exists.
+- Only if NO appropriate MCP tool exists should you write Python code for the Executor to run.
+- NEVER write Python code that calls MCP tools (e.g., add_numbers(...)); tools are NOT defined in the Executor Python environment.
+- If you are not needed for this request, respond with exactly: SKIP
+
+ROLE:
+You are a senior data scientist expert in writing clean Python code for data analytics.
+
+TOOL USAGE:
+- add_numbers(a, b) is an MCP tool available for addition.
+- If the user asks to add numbers (e.g., "3 + 5"), call add_numbers(a, b) via tool/function calling.
+- Do NOT write Python for simple arithmetic.
+
+CODE RULES:
+- Output ONLY Python code when code is required.
+- Do not include explanations or prose.
+- Do not produce unnecessary code.
+
+DATASET RULES:
 Use the code from FileReader and Summarizer to answer the question being asked.
-When using existing code from group chat ensure the correctness of code per initial question.
-You will provide only code; no text statements.
-Don't provide unnecessary code.
-The schema for dataset is {data_schema}.
-{common_instruct}""",
+Ensure correctness of any reused code from the group chat.
+
+The schema for dataset is:
+{data_schema}
+
+{common_instruct}
+""",
 )
 
 filereader = autogen.AssistantAgent(
     name="FileReader",
     llm_config=config_list,
-    system_message=f"""Read dataset and check its consistency. The schema for dataset is {data_schema}.
-You should write Python code to read the file and print the shape of the dataframe.
-If the shape is non-zero, print 'File reading successful'.
-Strictly no statements, only code.
-Invoice number and Customer ID are personal information and should not be shared or read while file reading.
-{common_instruct}""",
+    system_message=f"""
+ROLE:
+You are responsible ONLY for loading the dataset and verifying it can be read.
+
+IMPORTANT:
+If the user request is NOT about the dataset, respond with exactly: SKIP
+
+TOOLS-FIRST POLICY:
+- Do NOT call MCP tools.
+- Your responsibility is dataset loading only.
+
+TASK:
+Write Python code that:
+1. Reads the dataset file.
+2. Prints the dataframe shape.
+3. If shape is non-zero, prints "File reading successful".
+
+RULES:
+- Output ONLY Python code.
+- No explanations or comments.
+
+Invoice number and Customer ID are personal information and must not be exposed.
+
+Dataset schema:
+{data_schema}
+
+{common_instruct}
+""",
 )
 
 summarizer_agent = autogen.AssistantAgent(
     name="Summarizer",
     llm_config=config_list,
-    system_message=f"""You are a dataset summarizer agent. You will use the code already developed by FileReader and work on top of it.
-If summary is not being asked, don't write any code, simply skip your turn.
-Given the file content of a dataset, produce a concise summary that includes key properties like number of rows, columns, and any significant statistics.
-You will only provide code, no statements.
-The schema for dataset is {data_schema}.
-{common_instruct}""",
+    system_message=f"""
+ROLE:
+You summarize the dataset.
+
+IMPORTANT:
+If the user request is NOT asking for dataset summary or statistics, respond with exactly: SKIP
+
+TOOLS-FIRST POLICY:
+- Do NOT call MCP tools.
+- Only write Python if summarization is requested.
+
+TASK:
+Using the code from FileReader, produce Python code that summarizes the dataset
+including number of rows, columns, and key statistics.
+
+RULES:
+- Output ONLY Python code.
+- No explanations or prose.
+
+Dataset schema:
+{data_schema}
+
+{common_instruct}
+""",
 )
 
 viz = autogen.AssistantAgent(
     name="Visualization",
     llm_config=config_list,
-    system_message=f"""You are a data visualization expert.
-You write code for data visualization that is as per the rules of visualization.
-The visualization code has to be added only if it is relevant in the original question.
-You will use the code already developed by other agents.
-You will only provide code, no statements.
-The visualization should be always saved in png format.
-The schema for dataset is {data_schema}.
-{common_instruct}""",
+    system_message=f"""
+ROLE:
+You create visualizations for dataset analysis.
+
+IMPORTANT:
+If the user request does NOT require visualization, respond with exactly: SKIP
+
+TOOLS-FIRST POLICY:
+- Do NOT call MCP tools.
+
+TASK:
+Write Python code to produce visualizations when appropriate.
+
+RULES:
+- Output ONLY Python code.
+- Save visualizations as PNG files.
+- Use existing code produced by other agents when available.
+
+Dataset schema:
+{data_schema}
+
+{common_instruct}
+""",
 )
 
 executor = autogen.UserProxyAgent(
     name="Executor",
-    system_message="Execute the code. If the code executes successfully, print message TERMINATE.",
+    system_message="Execute the Python code. If the code executes successfully, print TERMINATE.",
     human_input_mode="NEVER",
     code_execution_config={
         "last_n_messages": 3,
@@ -344,9 +426,25 @@ groupchat = autogen.GroupChat(
 
 manager = autogen.GroupChatManager(
     system_message=(
-        "You are a chat manager. Fragment the task and assign it to agents based on their capabilities.\n"
-        "Example: File reading → FileReader, Dataframe summarization → Summarizer, Data manipulation → Data Scientist.\n"
-        "Don't give all tasks to a single agent. Once an agent provides code, ask the Executor agent to execute it."
+        "You are a chat manager responsible for orchestrating the agents.\n\n"
+
+        "GLOBAL POLICY (CRITICAL): TOOLS-FIRST, CODE-SECOND.\n"
+        "- If an appropriate MCP tool exists for the request, instruct the responsible agent to call that tool.\n"
+        "- Only if NO appropriate tool exists should agents write Python for the Executor.\n"
+        "- NEVER allow Python code that calls MCP tools (e.g., add_numbers(...)).\n\n"
+
+        "ARITHMETIC RULE:\n"
+        "- For simple arithmetic tasks like '3 + 5', route directly to DataScientist to call add_numbers.\n"
+        "- Do NOT involve dataset agents for arithmetic tasks.\n\n"
+
+        "AGENT SELECTION:\n"
+        "- File reading → FileReader\n"
+        "- Dataset summary → Summarizer\n"
+        "- Data analysis or computation → DataScientist\n"
+        "- Visualization → Visualization\n\n"
+
+        "If an agent is not relevant to the task, it must respond with exactly: SKIP.\n"
+        "If Python code is produced, send it to Executor to run."
     ),
     is_termination_msg=lambda msg: (
         isinstance(msg, dict)
@@ -361,60 +459,40 @@ manager = autogen.GroupChatManager(
 )
 
 
-def extract_relevant_output(chat_history):
+
+
+def _register_autogen_tool(agent, fn, name: str, description: str):
     """
-    Heuristic:
-    - If the last executed code produced an image (plt.savefig), return the image endpoint.
-    - Else if we have an execution result line (exitcode), return it.
-    - Else return the last non-empty assistant message (non-Admin).
+    AutoGen APIs differ across versions. This tries the common patterns.
     """
-    last_python_code = None
-    last_code_index = None
-    execution_result = None
-    image_filename = None
+    # register_for_llm pattern
+    if hasattr(agent, "register_for_llm"):
+        agent.register_for_llm(name=name, description=description)(fn)
+        return
 
-    # 1) Find last python code
-    for i in reversed(range(len(chat_history))):
-        content = (chat_history[i].get("content") or "")
-        if "```python" in content:
-            match = re.search(r"```python\n(.*?)```", content, re.DOTALL)
-            if match:
-                last_python_code = match.group(1)
-                last_code_index = i
-                break
+    # Some versions may support a generic register_function on agent
+    if hasattr(agent, "register_function"):
+        agent.register_function(fn, name=name, description=description)
+        return
 
-    # 2) Execution result after code block
-    if last_code_index is not None and last_code_index + 1 < len(chat_history):
-        next_entry = chat_history[last_code_index + 1]
-        next_content = (next_entry.get("content") or "")
-        if "exitcode:" in next_content.lower():
-            execution_result = next_content
+    raise RuntimeError(f"AutoGen agent {getattr(agent, 'name', str(agent))} does not support tool registration APIs.")
 
-    # 3) Detect image saved
-    if last_python_code:
-        match = re.search(r'plt\.savefig\(["\'](.*?)["\']\)', last_python_code)
-        if match:
-            image_filename = match.group(1)
 
-    # 4) If image exists, return it
-    if image_filename and os.path.exists(os.path.join(IMAGE_DIR, image_filename)):
-        return {"type": "image", "image_url": f"/get_image/{os.path.basename(image_filename)}"}
+def _register_autogen_execution(proxy_agent, fn):
+    """
+    Register a function for execution. API differs across versions.
+    """
+    if hasattr(proxy_agent, "register_for_execution"):
+        proxy_agent.register_for_execution()(fn)
+        return
 
-    # 5) Otherwise return execution output
-    if execution_result:
-        return {"type": "text", "content": execution_result}
+    # Some versions expose a function map dict
+    if hasattr(proxy_agent, "function_map") and isinstance(proxy_agent.function_map, dict):
+        proxy_agent.function_map[fn.__name__] = fn
+        return
 
-    # 6) Otherwise return last assistant message (skip Admin)
-    for m in reversed(chat_history):
-        name = (m.get("name") or "").strip()
-        content = (m.get("content") or "").strip()
-        if not content:
-            continue
-        if name == "Admin":
-            continue
-        return {"type": "text", "content": content}
-
-    return {"type": "text", "content": "No relevant output found."}
+    # Last resort: do nothing (LLM may still "call" but it won't execute)
+    raise RuntimeError("This AutoGen version does not support registering executable functions on the proxy agent.")
 
 
 @router.post("/multi_ai_agent")
@@ -425,6 +503,10 @@ async def multi_ai_agent_query(request: QueryRequest, http_req: Request):
     Optional behavior:
     - If user includes an email address in the prompt, we will email the result
       via MCP send_email tool (ONLY if allowed by ALLOWED_TOOLS).
+
+    Tool-calling behavior:
+    - Exposes MCP tools (currently: add_numbers) to AutoGen as real tools.
+    - Tool implementation runs via the backend's already-connected MCP client.
     """
     # MCP client must exist
     mcp_http = getattr(http_req.app.state, "mcp_http", None)
@@ -439,6 +521,36 @@ async def multi_ai_agent_query(request: QueryRequest, http_req: Request):
 
     # Rewrite any URL into agent-visible filename
     cleaned_question = re.sub(r"https?://\S+", AGENT_CSV, cleaned_question)
+
+    # ----------------------------
+    # MCP-backed AutoGen tools
+    # ----------------------------
+    # async implementation that uses the already-connected MCP client
+    async def _mcp_add_numbers(a: float, b: float):
+        resp = await mcp_http.tool_call("add_numbers", {"a": a, "b": b})
+
+        # Try to return a clean scalar for the LLM
+        try:
+            return resp["result"]["structuredContent"]["result"]
+        except Exception:
+            return resp
+
+    # sync wrapper callable from AutoGen's worker thread
+    def add_numbers(a: float, b: float):
+        return anyio.from_thread.run(_mcp_add_numbers, a, b)
+
+    # Register tool for THIS request lifecycle
+    try:
+        _register_autogen_execution(user_proxy, add_numbers)
+        for agent in [filereader, summarizer_agent, coder, viz]:
+            _register_autogen_tool(
+                agent,
+                add_numbers,
+                name="add_numbers",
+                description="Add two numbers a and b using the MCP add_numbers tool. Returns the sum.",
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to register AutoGen tools: {e}")
 
     # Run AutoGen (blocking) in a thread with timeout
     try:
@@ -456,7 +568,13 @@ async def multi_ai_agent_query(request: QueryRequest, http_req: Request):
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {e}")
 
     # Decide what to return
-    result = extract_relevant_output(chat_result.chat_history)
+    result = extract_relevant_output(
+        user_question=cleaned_question,
+        chat_history=chat_result.chat_history,
+        image_dir=IMAGE_DIR,
+        ollama_url=OLLAMA_URL,
+        ollama_model=OLLAMA_MODEL,
+    )
 
     # If email present, send via MCP (side-effect)
     emailed_to = None
