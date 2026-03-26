@@ -1,36 +1,97 @@
+"""
+gmail_send.py  →  smtp_send.py (drop-in replacement)
+ 
+Sends email via plain SMTP — no OAuth, no Google APIs.
+Works with Gmail, Outlook, Yahoo, corporate Exchange, or any SMTP relay.
+ 
+Required environment variables:
+    SMTP_HOST      e.g. smtp.gmail.com | smtp.office365.com | mail.company.com
+    SMTP_PORT      e.g. 587 (STARTTLS, recommended) | 465 (SSL) | 25
+    SMTP_USER      your login / sender address
+    SMTP_PASSWORD  your password or app-password
+ 
+Optional:
+    SMTP_FROM      display "From" address (defaults to SMTP_USER)
+    SMTP_TLS       "starttls" (default) | "ssl" | "none"
+"""
+ 
+import os
+import smtplib
+import ssl
+from email.mime.text import MIMEText
+ 
+ 
+def _smtp_settings() -> dict:
+    host = os.getenv("SMTP_HOST")
+    port = int(os.getenv("SMTP_PORT", "587"))
+    user = os.getenv("SMTP_USER")
+    password = os.getenv("SMTP_PASSWORD")
+    from_addr = os.getenv("SMTP_FROM", user)
+    tls_mode = os.getenv("SMTP_TLS", "starttls").lower()
+ 
+    if not host or not user or not password:
+        raise RuntimeError(
+            "Missing SMTP config. Set SMTP_HOST, SMTP_USER, and SMTP_PASSWORD "
+            "in your environment or .env file."
+        )
+ 
+    return {
+        "host": host,
+        "port": port,
+        "user": user,
+        "password": password,
+        "from_addr": from_addr,
+        "tls_mode": tls_mode,
+    }
+ 
+ 
 def send_email(recipient_email: str, subject: str, body: str) -> None:
-    import os.path
-    import base64
-    from email.mime.text import MIMEText
-
-    from google.auth.transport.requests import Request
-    from google.oauth2.credentials import Credentials
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    from googleapiclient.discovery import build
-    from googleapiclient.errors import HttpError
-
-    SCOPES = ['https://www.googleapis.com/auth/gmail.send']
-
-    creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0, open_browser=False)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-
+    """
+    Send a plain-text email via SMTP.
+ 
+    Args:
+        recipient_email: Destination address.
+        subject:         Email subject line.
+        body:            Plain-text body content.
+    """
+    cfg = _smtp_settings()
+ 
+    msg = MIMEText(body, "plain")
+    msg["To"] = recipient_email
+    msg["From"] = cfg["from_addr"]
+    msg["Subject"] = subject
+ 
+    context = ssl.create_default_context()
+ 
     try:
-        service = build('gmail', 'v1', credentials=creds)
-        message = MIMEText(body)
-        message['to'] = recipient_email
-        message['subject'] = subject
-        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        service.users().messages().send(userId="me", body={"raw": raw_message}).execute()
-    except HttpError as error:
-        raise RuntimeError(f"Gmail API error: {error}")
+        if cfg["tls_mode"] == "ssl":
+            # Port 465 — connect inside an SSL tunnel from the start
+            with smtplib.SMTP_SSL(cfg["host"], cfg["port"], context=context) as server:
+                server.login(cfg["user"], cfg["password"])
+                server.sendmail(cfg["from_addr"], recipient_email, msg.as_string())
+ 
+        elif cfg["tls_mode"] == "starttls":
+            # Port 587 — connect plain, then upgrade to TLS
+            with smtplib.SMTP(cfg["host"], cfg["port"]) as server:
+                server.ehlo()
+                server.starttls(context=context)
+                server.ehlo()
+                server.login(cfg["user"], cfg["password"])
+                server.sendmail(cfg["from_addr"], recipient_email, msg.as_string())
+ 
+        else:
+            # Port 25 / internal relay — no encryption (use only on trusted networks)
+            with smtplib.SMTP(cfg["host"], cfg["port"]) as server:
+                if cfg["user"] and cfg["password"]:
+                    server.login(cfg["user"], cfg["password"])
+                server.sendmail(cfg["from_addr"], recipient_email, msg.as_string())
+ 
+    except smtplib.SMTPAuthenticationError as e:
+        raise RuntimeError(
+            f"SMTP authentication failed for {cfg['user']}. "
+            "Check SMTP_USER / SMTP_PASSWORD. "
+            "Gmail users: enable 2FA and use an App Password."
+        ) from e
+    except smtplib.SMTPException as e:
+        raise RuntimeError(f"SMTP error: {e}") from e
 

@@ -1,76 +1,111 @@
+"""
+send-email.py — standalone script to send a plain-text email via SMTP.
+ 
+No OAuth. No Google APIs. Works with any SMTP provider.
+ 
+Configure via environment variables (or a .env file):
+    SMTP_HOST        e.g. smtp.gmail.com | smtp.office365.com | mail.company.com
+    SMTP_PORT        587 (STARTTLS, default) | 465 (SSL) | 25
+    SMTP_USER        your login username / sender address
+    SMTP_PASSWORD    your password or app-password
+    SMTP_FROM        optional display "From" address (defaults to SMTP_USER)
+    SMTP_TLS         starttls (default) | ssl | none
+ 
+    EMAIL_RECIPIENT  destination address  [required]
+    EMAIL_SUBJECT    subject line         [optional]
+    EMAIL_BODY       body text            [optional]
+ 
+Quick-start for common providers
+─────────────────────────────────────────────────────────────────────────────
+Gmail:
+    SMTP_HOST=smtp.gmail.com  SMTP_PORT=587  SMTP_TLS=starttls
+    → Create an App Password at myaccount.google.com/apppasswords
+ 
+Outlook / Office 365:
+    SMTP_HOST=smtp.office365.com  SMTP_PORT=587  SMTP_TLS=starttls
+ 
+Yahoo Mail:
+    SMTP_HOST=smtp.mail.yahoo.com  SMTP_PORT=587  SMTP_TLS=starttls
+    → Create an App Password in Yahoo Account Security settings
+ 
+Corporate relay (no auth):
+    SMTP_HOST=mail.company.com  SMTP_PORT=25  SMTP_TLS=none
+─────────────────────────────────────────────────────────────────────────────
+"""
+ 
 import os
-from dotenv import load_dotenv
-import os.path
-import base64
+import smtplib
+import ssl
 from email.mime.text import MIMEText
-
+from dotenv import load_dotenv
+ 
 load_dotenv()
-
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-
-# If modifying these scopes, delete the file token.json.                                                                                                                                                              
-# The 'gmail.send' scope is required to send emails.                                                                                                                                                                  
-SCOPES = ['https://www.googleapis.com/auth/gmail.send']
-
-def send_email_via_gmail_api(recipient_email, subject, body):
-    """Sends an email using the Gmail API.                                                                                                                                                                            
-                                                                                                                                                                                                                      
-    Args:                                                                                                                                                                                                             
-        recipient_email (str): The email address of the recipient.                                                                                                                                                    
-        subject (str): The subject of the email.                                                                                                                                                                      
-        body (str): The body content of the email.                                                                                                                                                                    
-    """
-    creds = None
-    # The file token.json stores the user's access and refresh tokens, and is                                                                                                                                         
-    # created automatically when the authorization flow completes for the first time.                                                                                                                                 
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    # If there are no (valid) credentials available, let the user log in.                                                                                                                                             
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            # The 'credentials.json' file is the one you downloaded from Google Cloud Console.                                                                                                                        
-            flow = InstalledAppFlow.from_client_secrets_file(
-                'credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        # Save the credentials for the next run                                                                                                                                                                       
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-
+ 
+ 
+def send_email_via_smtp(recipient_email: str, subject: str, body: str) -> None:
+    """Send a plain-text email using SMTP credentials from the environment."""
+ 
+    host = os.getenv("SMTP_HOST")
+    port = int(os.getenv("SMTP_PORT", "587"))
+    user = os.getenv("SMTP_USER")
+    password = os.getenv("SMTP_PASSWORD")
+    from_addr = os.getenv("SMTP_FROM", user)
+    tls_mode = os.getenv("SMTP_TLS", "starttls").lower()
+ 
+    if not host or not user or not password:
+        raise ValueError(
+            "Missing SMTP config. Set SMTP_HOST, SMTP_USER, and SMTP_PASSWORD "
+            "in your environment or .env file."
+        )
+ 
+    msg = MIMEText(body, "plain")
+    msg["To"] = recipient_email
+    msg["From"] = from_addr
+    msg["Subject"] = subject
+ 
+    context = ssl.create_default_context()
+ 
     try:
-        service = build('gmail', 'v1', credentials=creds)
-
-        # Create the email message                                                                                                                                                                                    
-        message = MIMEText(body)
-        message['to'] = recipient_email
-        message['subject'] = subject
-        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
-
-        # Send the message                                                                                                                                                                                            
-        send_message = (service.users().messages().send(
-            userId="me", body={"raw": raw_message}).execute())
-        print(f"Message Id: {send_message['id']}")
+        if tls_mode == "ssl":
+            with smtplib.SMTP_SSL(host, port, context=context) as server:
+                server.login(user, password)
+                server.sendmail(from_addr, recipient_email, msg.as_string())
+ 
+        elif tls_mode == "starttls":
+            with smtplib.SMTP(host, port) as server:
+                server.ehlo()
+                server.starttls(context=context)
+                server.ehlo()
+                server.login(user, password)
+                server.sendmail(from_addr, recipient_email, msg.as_string())
+ 
+        else:  # no TLS — internal relay
+            with smtplib.SMTP(host, port) as server:
+                if user and password:
+                    server.login(user, password)
+                server.sendmail(from_addr, recipient_email, msg.as_string())
+ 
         print(f"Email sent successfully to {recipient_email}")
-
-    except HttpError as error:
-        print(f"An error occurred: {error}")
-
-
-# Example Usage
+ 
+    except smtplib.SMTPAuthenticationError as e:
+        raise RuntimeError(
+            f"SMTP authentication failed for {user}. "
+            "Check credentials. Gmail users: use an App Password."
+        ) from e
+    except smtplib.SMTPException as e:
+        raise RuntimeError(f"SMTP error: {e}") from e
+ 
+ 
 if __name__ == "__main__":
     recipient = os.getenv("EMAIL_RECIPIENT")
-    email_subject = os.getenv("EMAIL_SUBJECT", "Test Email from Gmail API")
-    email_body = os.getenv(
-        "EMAIL_BODY",
-        "Hello,\n\nThis is a test email sent using the Google Gmail API with Python.\n\nBest regards,"
-    )
-
     if not recipient:
-        raise ValueError("EMAIL_RECIPIENT is not set in the environment")
-
-    send_email_via_gmail_api(recipient, email_subject, email_body)
+        raise ValueError("EMAIL_RECIPIENT is not set in the environment.")
+ 
+    subject = os.getenv("EMAIL_SUBJECT", "Test Email via SMTP")
+    body = os.getenv(
+        "EMAIL_BODY",
+        "Hello,\n\nThis is a test email sent using Python's smtplib.\n\nBest regards,",
+    )
+ 
+    send_email_via_smtp(recipient, subject, body)
+ 
