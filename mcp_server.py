@@ -10,7 +10,7 @@ from mcp.server.fastmcp import FastMCP
 
 load_dotenv()
 
-mcp = FastMCP("Allstate Tools", json_response=True)
+mcp = FastMCP("Allstate Tools")
 
 
 # ---------------------------------------------------------------------------

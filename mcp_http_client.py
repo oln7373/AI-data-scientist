@@ -1,5 +1,21 @@
 # mcp_http_client.py
 import httpx
+import json
+
+
+
+
+
+def _parse_response(resp: httpx.Response) -> dict:
+    """Handle both plain JSON and SSE-wrapped JSON responses."""
+    content_type = resp.headers.get("content-type", "")
+    if "text/event-stream" in content_type:
+        # Extract the data: line from the SSE payload
+        for line in resp.text.splitlines():
+            if line.startswith("data:"):
+                return json.loads(line[len("data:"):].strip())
+        raise RuntimeError(f"No data line found in SSE response: {resp.text!r}")
+    return resp.json()
 
 
 class MCPHttpClient:
@@ -36,7 +52,7 @@ class MCPHttpClient:
             if not sid:
                 raise RuntimeError("Missing mcp-session-id header on initialize response")
             self.session_id = sid
-            return resp.json()
+            return _parse_response(resp)
 
     async def tools_list(self) -> dict:
         if not self.session_id:
@@ -58,7 +74,7 @@ class MCPHttpClient:
                 },
             )
             resp.raise_for_status()
-            return resp.json()
+            return _parse_response(resp)
 
     async def tool_call(self, name: str, arguments: dict) -> dict:
         if not self.session_id:
@@ -80,4 +96,4 @@ class MCPHttpClient:
                 },
             )
             resp.raise_for_status()
-            return resp.json()
+            return _parse_response(resp)
