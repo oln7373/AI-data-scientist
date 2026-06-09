@@ -58,9 +58,21 @@ ALLOWED_TOOLS = set(
 if not ALLOWED_TOOLS:
     raise RuntimeError("ALLOWED_TOOLS not configured in .env")
 
-OLLAMA_PORT = os.getenv("OLLAMA_PORT", "11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:20b")
-OLLAMA_URL = f"http://localhost:{OLLAMA_PORT}/v1/chat/completions"
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
+
+if LLM_PROVIDER == "openai":
+    LLM_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+    LLM_BASE_URL = "https://api.openai.com/v1"
+else:
+    OLLAMA_PORT = os.getenv("OLLAMA_PORT", "11434")
+    LLM_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:20b")
+    LLM_BASE_URL = f"http://localhost:{OLLAMA_PORT}/v1"
+    LLM_API_KEY = "ollama"
+
+# Allow explicit base URL override (e.g. OpenRouter, Groq)
+LLM_BASE_URL = os.getenv("LLM_BASE_URL") or LLM_BASE_URL
+LLM_URL = f"{LLM_BASE_URL}/chat/completions"
 
 
 class QueryRequest(BaseModel):
@@ -107,12 +119,16 @@ async def mcp_agent_add(request: QueryRequest, http_req: Request):
         "Use tool calling when possible.\n"
     )
 
+    _headers = {"Content-Type": "application/json"}
+    if LLM_PROVIDER == "openai":
+        _headers["Authorization"] = f"Bearer {LLM_API_KEY}"
+
     async with httpx.AsyncClient(trust_env=False, timeout=60.0) as client:
         resp = await client.post(
-            OLLAMA_URL,
-            headers={"Content-Type": "application/json"},
+            LLM_URL,
+            headers=_headers,
             json={
-                "model": OLLAMA_MODEL,
+                "model": LLM_MODEL,
                 "temperature": 0.0,
                 "messages": [
                     {"role": "system", "content": system},
@@ -122,14 +138,14 @@ async def mcp_agent_add(request: QueryRequest, http_req: Request):
         )
 
     if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Ollama error {resp.status_code}: {resp.text[:1000]}")
+        raise HTTPException(status_code=502, detail=f"LLM error {resp.status_code}: {resp.text[:1000]}")
 
     data = resp.json()
 
     try:
         msg = data["choices"][0]["message"]
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Unexpected Ollama response shape: {e}. Raw={str(data)[:1000]}")
+        raise HTTPException(status_code=502, detail=f"Unexpected LLM response shape: {e}. Raw={str(data)[:1000]}")
 
     # ---- Preferred: OpenAI-style tool_calls ----
     tool_calls = msg.get("tool_calls") or []
@@ -147,7 +163,7 @@ async def mcp_agent_add(request: QueryRequest, http_req: Request):
         tool_resp = await mcp_http.tool_call(fn, args)
 
         return {
-            "ollama_used": {"url": OLLAMA_URL, "model": OLLAMA_MODEL},
+            "llm_used": {"provider": LLM_PROVIDER, "url": LLM_URL, "model": LLM_MODEL},
             "llm_finish_reason": data["choices"][0].get("finish_reason"),
             "llm_tool_call": {"tool": fn, "args": args},
             "mcp_response": tool_resp,
@@ -175,7 +191,7 @@ async def mcp_agent_add(request: QueryRequest, http_req: Request):
     tool_resp = await mcp_http.tool_call(tool, args)
 
     return {
-        "ollama_used": {"url": OLLAMA_URL, "model": OLLAMA_MODEL},
+        "llm_used": {"provider": LLM_PROVIDER, "url": LLM_URL, "model": LLM_MODEL},
         "llm_raw_content": content,
         "llm_plan": plan,
         "mcp_response": tool_resp,
@@ -261,9 +277,9 @@ common_instruct = (
 config_list = {
     "config_list": [
         {
-            "model": OLLAMA_MODEL,
-            "base_url": f"http://localhost:{OLLAMA_PORT}/v1",
-            "api_key": "ollama",
+            "model": LLM_MODEL,
+            "base_url": LLM_BASE_URL,
+            "api_key": LLM_API_KEY,
             "temperature": 0.0,
             "price": [0, 0],
         }
@@ -572,8 +588,9 @@ async def multi_ai_agent_query(request: QueryRequest, http_req: Request):
         user_question=cleaned_question,
         chat_history=chat_result.chat_history,
         image_dir=IMAGE_DIR,
-        ollama_url=OLLAMA_URL,
-        ollama_model=OLLAMA_MODEL,
+        llm_url=LLM_URL,
+        llm_model=LLM_MODEL,
+        llm_api_key=LLM_API_KEY,
     )
 
     # If email present, send via MCP (side-effect)

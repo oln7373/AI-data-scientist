@@ -8,13 +8,13 @@ The system consists of:
 
 - A **FastAPI backend**
 - A **Streamlit frontend**
-- A **local LLM** served by **Ollama**
+- An **LLM backend** — either a local model served by **Ollama**, or any **OpenAI-compatible API** (OpenAI, OpenRouter, Groq, etc.)
 - A **multi-agent AutoGen** orchestration layer
 - A separate **MCP server** for tool execution
 
 The backend enforces strict tool governance via an allowlist, ensuring that all external side effects (e.g., sending emails) are executed through MCP rather than directly by the LLM.
 
-The code and dependencies presuppose access to an **NVIDIA GPU** (e.g., Quadro RTX 8000, A100). While limited functionality may run on CPU, GPU usage is strongly recommended for practical performance.
+When using Ollama, the code and dependencies presuppose access to an **NVIDIA GPU** (e.g., Quadro RTX 8000, A100). GPU usage is strongly recommended for practical performance. When using an OpenAI-compatible API, no local GPU is required.
 
 ---
 
@@ -31,7 +31,7 @@ This pathway performs structured data analysis over `customer_shopping_data.csv`
 
 ### 2. Direct LLM Tool Calling
 
-User → `/mcp_agent_add` → Ollama (LLM) → `tool_calls` →  
+User → `/mcp_agent_add` → LLM → `tool_calls` →  
 Backend allowlist enforcement → MCP execution → Return result
 
 This pathway demonstrates OpenAI-style function calling.
@@ -44,10 +44,11 @@ This pathway demonstrates OpenAI-style function calling.
 
 Python 3.10+. All required packages are listed in `myenv.txt`.
 
-### Ollama (Required)
+### LLM Backend (Required — choose one)
 
-This system uses **Ollama** to serve large language models locally.  
-Ollama must be installed and running **before** starting the backend.
+**Option A — Ollama (local):** serves models on your own hardware. Requires a GPU for practical performance.
+
+**Option B — OpenAI-compatible API:** use OpenAI, [OpenRouter](https://openrouter.ai) (includes free models), Groq, or any other OpenAI-compatible provider. No local GPU needed.
 
 ### MCP Server (Required)
 
@@ -114,16 +115,64 @@ pip install -r myenv.txt
 cp env.sample .env
 ```
 
-Edit ```.env``` and provide values for
+Edit `.env` and configure your LLM backend. **Choose one of the two options below.**
 
+---
+
+#### Option A — Ollama (local GPU)
+
+```env
+LLM_PROVIDER=ollama
+OLLAMA_PORT=11434        # 11435 for Quadro RTX 8000, 11434 for A100
+OLLAMA_MODEL=gpt-oss:20b # or whichever model you have pulled
 ```
-OLLAMA_PORT=11435
-OLLAMA_MODEL=gpt-oss:20b
+
+Ollama must be installed, running (`ollama serve`), and the model must be pulled before starting the backend.
+
+---
+
+#### Option B — OpenAI-compatible API (no local GPU)
+
+```env
+LLM_PROVIDER=openai
+OPENAI_API_KEY=<your-api-key>
+OPENAI_MODEL=gpt-4o               # or any model your provider supports
+LLM_BASE_URL=                     # leave blank for OpenAI; set for other providers (see below)
+```
+
+**Using OpenRouter (includes free models):**
+
+1. Create a free account at [openrouter.ai](https://openrouter.ai) and generate an API key.
+2. Set the following in `.env`:
+
+```env
+LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-or-v1-...
+OPENAI_MODEL=meta-llama/llama-3.1-8b-instruct:free
+LLM_BASE_URL=https://openrouter.ai/api/v1
+```
+
+Browse available free models at [openrouter.ai/models](https://openrouter.ai/models?order=newest&supported_parameters=free).
+
+**Using Groq:**
+
+```env
+LLM_PROVIDER=openai
+OPENAI_API_KEY=<your-groq-key>
+OPENAI_MODEL=llama-3.1-8b-instant
+LLM_BASE_URL=https://api.groq.com/openai/v1
+```
+
+---
+
+#### Common settings (required regardless of provider)
+
+```env
 MCP_PORT=8005
 ALLOWED_TOOLS=add_numbers,ping,send_email,compose_email
 ```
 
-The ```ALLOWED_TOOLS``` variable controls which MCP tools may be executed by the backend.
+The `ALLOWED_TOOLS` variable controls which MCP tools may be executed by the backend.
 
 ### 9. Launch the FastAPI Backend
 
@@ -327,7 +376,7 @@ Key responsibilities:
   - `DataScientist`
   - `Visualization`
   - `Executor`
-- Handles Ollama-based LLM reasoning
+- Handles LLM reasoning via Ollama or any OpenAI-compatible API
 - Coordinates code generation and execution via AutoGen group chat
 - Extracts relevant outputs from agent execution
 - Supports optional email delivery via MCP tools
@@ -410,7 +459,7 @@ Capabilities include:
 
 - PDF document ingestion
 - Text extraction and chunking
-- Summarization using Ollama LLM models
+- Summarization using the configured LLM (Ollama or OpenAI-compatible API)
 - Multiple summary styles:
   - abstractive
   - extractive
@@ -435,7 +484,7 @@ Functionality includes:
 - Building or loading a persistent vector index from documents
 - Embedding documents using HuggingFace embedding models
 - Semantic retrieval using LlamaIndex
-- Querying retrieved context with an Ollama LLM
+- Querying retrieved context with the configured LLM (Ollama or OpenAI-compatible API)
 
 The API endpoint `/rag-query` allows users to perform semantic document queries.
 
@@ -507,16 +556,20 @@ pip install -r myenv.txt
 
 Example environment configuration file.
 
-Defines required environment variables such as:
+Defines required environment variables. Key variables:
 
 ```
-OLLAMA_PORT
-OLLAMA_MODEL
-MCP_PORT
-ALLOWED_TOOLS
+LLM_PROVIDER        # "ollama" or "openai"
+LLM_BASE_URL        # optional override for OpenRouter, Groq, etc.
+OPENAI_API_KEY      # API key for OpenAI-compatible providers
+OPENAI_MODEL        # model name (e.g. gpt-4o, meta-llama/llama-3.1-8b-instruct:free)
+OLLAMA_PORT         # port Ollama is listening on (Ollama only)
+OLLAMA_MODEL        # model name pulled in Ollama (Ollama only)
+MCP_PORT            # port the MCP server runs on
+ALLOWED_TOOLS       # comma-separated list of permitted MCP tools
 ```
 
-These variables control runtime configuration of the backend and MCP tool access.
+See step 8 for full configuration instructions for each provider.
 
 ---
 

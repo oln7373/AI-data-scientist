@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import os
+from dotenv import load_dotenv
 
 from llama_index.core import (
     VectorStoreIndex,
@@ -10,7 +11,8 @@ from llama_index.core import (
     load_index_from_storage,
 )
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.llms.ollama import Ollama
+
+load_dotenv()
 
 # ----------------------------
 # FastAPI router
@@ -24,11 +26,23 @@ Settings.embed_model = HuggingFaceEmbedding(
     model_name="BAAI/bge-base-en-v1.5"
 )
 
-Settings.llm = Ollama(
-    model="gpt-oss:20b",
-    options={"temperature": 0.3},
-    request_timeout=460,
-)
+_LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
+
+if _LLM_PROVIDER == "openai":
+    from llama_index.llms.openai import OpenAI as LlamaOpenAI
+    Settings.llm = LlamaOpenAI(
+        model=os.getenv("OPENAI_MODEL", "gpt-4o"),
+        api_key=os.getenv("OPENAI_API_KEY", ""),
+        api_base=os.getenv("LLM_BASE_URL") or None,
+        temperature=0.3,
+    )
+else:
+    from llama_index.llms.ollama import Ollama
+    Settings.llm = Ollama(
+        model="gpt-oss:20b",
+        options={"temperature": 0.3},
+        request_timeout=460,
+    )
 
 # ----------------------------
 # Load or build vector index

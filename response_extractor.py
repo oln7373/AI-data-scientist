@@ -46,8 +46,9 @@ def extract_relevant_output(
     user_question: str,
     chat_history: List[Dict[str, Any]],
     image_dir: str,
-    ollama_url: str,
-    ollama_model: str,
+    llm_url: str,
+    llm_model: str,
+    llm_api_key: str = "",
 ) -> Dict[str, str]:
     """
     Extract the final user-facing answer from an AutoGen-style backend trace.
@@ -75,8 +76,9 @@ def extract_relevant_output(
     llm_raw = _call_extractor_llm(
         user_question=user_question,
         condensed_trace=condensed_trace,
-        ollama_url=ollama_url,
-        ollama_model=ollama_model,
+        llm_url=llm_url,
+        llm_model=llm_model,
+        llm_api_key=llm_api_key,
     )
     llm_obj = _safe_parse_json_object(llm_raw) if llm_raw else None
 
@@ -424,8 +426,9 @@ def _build_condensed_trace(chat_history: List[Dict[str, Any]], max_chars: int = 
 def _call_extractor_llm(
     user_question: str,
     condensed_trace: str,
-    ollama_url: str,
-    ollama_model: str,
+    llm_url: str,
+    llm_model: str,
+    llm_api_key: str = "",
 ) -> Optional[str]:
     if not condensed_trace:
         return None
@@ -458,12 +461,16 @@ def _call_extractor_llm(
         f"BACKEND TRACE:\n{condensed_trace}\n"
     )
 
+    _headers = {"Content-Type": "application/json"}
+    if llm_api_key and llm_api_key != "ollama":
+        _headers["Authorization"] = f"Bearer {llm_api_key}"
+
     try:
         resp = requests.post(
-            ollama_url,
-            headers={"Content-Type": "application/json"},
+            llm_url,
+            headers=_headers,
             json={
-                "model": ollama_model,
+                "model": llm_model,
                 "temperature": 0.0,
                 "messages": [
                     {"role": "system", "content": system_prompt},
