@@ -27,23 +27,24 @@ _cfg = get_config()
 
 Settings.embed_model = HuggingFaceEmbedding(model_name=_cfg.rag.embed_model)
 
-_LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
+from llama_index.llms.openai import OpenAI as LlamaOpenAI
 
-if _LLM_PROVIDER == "openai":
-    from llama_index.llms.openai import OpenAI as LlamaOpenAI
-    Settings.llm = LlamaOpenAI(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o"),
-        api_key=os.getenv("OPENAI_API_KEY", ""),
-        api_base=os.getenv("LLM_BASE_URL") or None,
-        temperature=_cfg.llm.temperature_rag,
-    )
-else:
-    from llama_index.llms.ollama import Ollama
-    Settings.llm = Ollama(
-        model=os.getenv("OLLAMA_MODEL", "gpt-oss:20b"),
-        options={"temperature": _cfg.llm.temperature_rag},
-        request_timeout=_cfg.llm.rag_request_timeout_seconds,
-    )
+_ollama_port = os.getenv("OLLAMA_PORT", "11434")
+_llm_base_url = os.getenv("LLM_BASE_URL") or f"http://localhost:{_ollama_port}/v1"
+_llm_api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or "ollama"
+_llm_model = (
+    os.getenv("LLM_MODEL")
+    or os.getenv("OPENAI_MODEL")
+    or os.getenv("OLLAMA_MODEL")
+    or "llama3.2"
+)
+
+Settings.llm = LlamaOpenAI(
+    model=_llm_model,
+    api_key=_llm_api_key,
+    api_base=_llm_base_url,
+    temperature=_cfg.llm.temperature_rag,
+)
 
 _index_dir = _cfg.rag.index_dir
 _data_dir = _cfg.rag.data_dir

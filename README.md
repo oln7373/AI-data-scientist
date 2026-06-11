@@ -8,13 +8,13 @@ The system consists of:
 
 - A **FastAPI backend**
 - A **Streamlit frontend**
-- An **LLM backend** — either a local model served by **Ollama**, or any **OpenAI-compatible API** (OpenAI, OpenRouter, Groq, etc.)
+- An **LLM backend** — any OpenAI-compatible provider: Ollama (local), OpenAI, OpenRouter (Anthropic, Google, Meta, Mistral + free models), Groq, Together AI, Azure, or any other `/v1` endpoint
 - A **multi-agent AutoGen** orchestration layer
 - A separate **MCP server** for tool execution
 
 The backend enforces strict tool governance via an allowlist, ensuring that all external side effects (e.g., sending emails) are executed through MCP rather than directly by the LLM.
 
-When using Ollama, the code and dependencies presuppose access to an **NVIDIA GPU** (e.g., Quadro RTX 8000, A100). GPU usage is strongly recommended for practical performance. When using an OpenAI-compatible API, no local GPU is required.
+When using Ollama locally, an **NVIDIA GPU** is strongly recommended for practical performance. All cloud providers (OpenAI, OpenRouter, Groq, etc.) require no local GPU.
 
 ---
 
@@ -46,11 +46,21 @@ Python 3.10+. All required packages are listed in `myenv.txt`.
 
 **Logging:** all modules use [structlog](https://www.structlog.org) for structured JSON logging. `print()` statements are not used in any committed code. Logs are emitted as machine-readable JSON to stdout. `structlog` must be installed (it is included in `myenv.txt`).
 
-### LLM Backend (Required — choose one)
+### LLM Backend (Required — choose any provider)
 
-**Option A — Ollama (local):** serves models on your own hardware. Requires a GPU for practical performance.
+The system works with **any OpenAI-compatible LLM endpoint**. Set three environment variables and the same code runs everywhere — no provider-specific branches, no special flags.
 
-**Option B — OpenAI-compatible API:** use OpenAI, [OpenRouter](https://openrouter.ai) (includes free models), Groq, or any other OpenAI-compatible provider. No local GPU needed.
+| Provider | `LLM_BASE_URL` | Notes |
+|---|---|---|
+| **Ollama** (local) | `http://localhost:11434/v1` | Default when unset. GPU recommended. |
+| **OpenAI** | `https://api.openai.com/v1` | Requires `LLM_API_KEY=sk-...` |
+| **OpenRouter** | `https://openrouter.ai/api/v1` | Access Anthropic Claude, Google Gemini, Meta Llama, Mistral, and more — including [free models](https://openrouter.ai/models?supported_parameters=free). |
+| **Groq** | `https://api.groq.com/openai/v1` | Fast open-source inference. |
+| **Together AI** | `https://api.together.xyz/v1` | Wide model selection. |
+| **Mistral** | `https://api.mistral.ai/v1` | Mistral models only. |
+| **Azure OpenAI** | `https://<resource>.openai.azure.com/openai/deployments/<deployment>/` | Enterprise Azure. |
+
+To access **Anthropic Claude** or **Google Gemini**, use OpenRouter as the base URL and set `LLM_MODEL` to `anthropic/claude-3.5-sonnet` or `google/gemini-flash-1.5` respectively.
 
 ### MCP Server (Required)
 
@@ -83,7 +93,7 @@ ollama serve
 ### 4. Pull Required Models
 
 ```bash
-ollama pull gpt-oss:20b # or model of your choice
+ollama pull llama3.2    # or whichever model you want to use
 ```
 
 ## Running the MCP Server
@@ -117,53 +127,53 @@ pip install -r myenv.txt
 cp env.sample .env
 ```
 
-Edit `.env` and configure your LLM backend. **Choose one of the two options below.**
+Edit `.env` and set the three LLM variables for your chosen provider.
 
----
-
-#### Option A — Ollama (local GPU)
+#### Ollama (local GPU)
 
 ```env
-LLM_PROVIDER=ollama
-OLLAMA_PORT=11434        # 11435 for Quadro RTX 8000, 11434 for A100
-OLLAMA_MODEL=gpt-oss:20b # or whichever model you have pulled
+LLM_BASE_URL=http://localhost:11434/v1
+LLM_API_KEY=ollama
+LLM_MODEL=llama3.2          # or whichever model you have pulled
+OLLAMA_PORT=11434            # change if Ollama is on a non-default port
 ```
 
-Ollama must be installed, running (`ollama serve`), and the model must be pulled before starting the backend.
+Ollama must be installed, running (`ollama serve`), and the model must be pulled (`ollama pull llama3.2`) before starting the backend.
 
----
-
-#### Option B — OpenAI-compatible API (no local GPU)
+#### OpenAI
 
 ```env
-LLM_PROVIDER=openai
-OPENAI_API_KEY=<your-api-key>
-OPENAI_MODEL=gpt-4o               # or any model your provider supports
-LLM_BASE_URL=                     # leave blank for OpenAI; set for other providers (see below)
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_API_KEY=sk-...
+LLM_MODEL=gpt-4o
 ```
 
-**Using OpenRouter (includes free models):**
+#### OpenRouter — access Anthropic, Google, Meta, Mistral + free models
 
 1. Create a free account at [openrouter.ai](https://openrouter.ai) and generate an API key.
 2. Set the following in `.env`:
 
 ```env
-LLM_PROVIDER=openai
-OPENAI_API_KEY=sk-or-v1-...
-OPENAI_MODEL=meta-llama/llama-3.1-8b-instruct:free
 LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_API_KEY=sk-or-v1-...
+LLM_MODEL=meta-llama/llama-3.1-8b-instruct:free   # free example
+# LLM_MODEL=anthropic/claude-3.5-sonnet            # Claude via OpenRouter
+# LLM_MODEL=google/gemini-flash-1.5                # Gemini via OpenRouter
 ```
 
-Browse available free models at [openrouter.ai/models](https://openrouter.ai/models?order=newest&supported_parameters=free).
+Browse free models at [openrouter.ai/models](https://openrouter.ai/models?supported_parameters=free).
 
-**Using Groq:**
+#### Groq
 
 ```env
-LLM_PROVIDER=openai
-OPENAI_API_KEY=<your-groq-key>
-OPENAI_MODEL=llama-3.1-8b-instant
 LLM_BASE_URL=https://api.groq.com/openai/v1
+LLM_API_KEY=gsk_...
+LLM_MODEL=llama-3.1-8b-instant
 ```
+
+#### Other providers (Together AI, Mistral, Azure, etc.)
+
+Set `LLM_BASE_URL` to the provider's `/v1` endpoint, `LLM_API_KEY` to your key, and `LLM_MODEL` to the model name. See `env.sample` for a full list of examples.
 
 ---
 
@@ -249,7 +259,7 @@ LLM-driven tool-calling demonstration endpoint.
 
 **Execution Flow:**
 
-1. The user prompt is sent to Ollama.  
+1. The user prompt is sent to the configured LLM.  
 2. The LLM emits `tool_calls` using OpenAI-style function-calling syntax.  
 3. The backend validates the requested tool against the configured allowlist.  
 4. If approved, the backend invokes the tool via the MCP server.  
@@ -378,7 +388,7 @@ Key responsibilities:
   - `DataScientist`
   - `Visualization`
   - `Executor`
-- Handles LLM reasoning via Ollama or any OpenAI-compatible API
+- Handles LLM reasoning via any configured OpenAI-compatible provider
 - Coordinates code generation and execution via AutoGen group chat
 - Extracts relevant outputs from agent execution
 - Supports optional email delivery via MCP tools
@@ -401,7 +411,7 @@ Available MCP tools include:
 - `ping` — connectivity test
 - `add_numbers` — arithmetic demonstration tool
 - `compose_email` — constructs email payloads
-- `send_email` — sends email using the Gmail API
+- `send_email` — sends email via SMTP
 
 The MCP server isolates all external side effects from the LLM and backend logic.
 
@@ -461,7 +471,7 @@ Capabilities include:
 
 - PDF document ingestion
 - Text extraction and chunking
-- Summarization using the configured LLM (Ollama or OpenAI-compatible API)
+- Summarization using the configured LLM (any OpenAI-compatible provider)
 - Multiple summary styles:
   - abstractive
   - extractive
@@ -486,7 +496,7 @@ Functionality includes:
 - Building or loading a persistent vector index from documents
 - Embedding documents using HuggingFace embedding models
 - Semantic retrieval using LlamaIndex
-- Querying retrieved context with the configured LLM (Ollama or OpenAI-compatible API)
+- Querying retrieved context with the configured LLM (any OpenAI-compatible provider)
 
 The API endpoint `/rag-query` allows users to perform semantic document queries.
 
@@ -529,7 +539,7 @@ Features:
 - `--out FILE` flag to save full results as JSON
 - `--static-only` flag to skip the LLM judge and use only deterministic checks
 
-Uses the same `LLM_PROVIDER` / `OPENAI_API_KEY` / `OPENAI_MODEL` settings from `.env`.
+Uses the same `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` settings from `.env`.
 
 **Important:** for accurate results, start the backend with `FAITHFUL_EXTRACTION=true` so the extraction layer does not sanitize leaked data before it reaches the grader.
 
@@ -547,19 +557,6 @@ Functions include:
 - generating absolute URLs for generated images
 
 These utilities support the email delivery functionality in the agent system.
-
----
-
-### `gmail_send.py`
-
-Standalone Gmail API email sending utility.
-
-Handles:
-
-- OAuth authentication
-- message construction
-- encoding email payloads
-- sending messages via the Gmail API
 
 ---
 
@@ -604,19 +601,17 @@ Example environment configuration file.
 Defines required environment variables. Key variables:
 
 ```
-LLM_PROVIDER           # "ollama" or "openai"
-LLM_BASE_URL           # optional override for OpenRouter, Groq, etc.
-OPENAI_API_KEY         # API key for OpenAI-compatible providers
-OPENAI_MODEL           # model name (e.g. gpt-4o, meta-llama/llama-3.1-8b-instruct:free)
-OLLAMA_PORT            # port Ollama is listening on (Ollama only)
-OLLAMA_MODEL           # model name pulled in Ollama (Ollama only)
-MCP_PORT               # port the MCP server runs on
-ALLOWED_TOOLS          # comma-separated list of permitted MCP tools
-BACKEND_URL            # backend base URL used by the Streamlit frontend (default: http://127.0.0.1:8001)
-FAITHFUL_EXTRACTION    # set to "true" for red-team accuracy; bypasses LLM sanitization in response extraction
+LLM_BASE_URL           # Provider /v1 endpoint (default: Ollama localhost)
+LLM_API_KEY            # API key — ignored by Ollama, required for cloud providers
+LLM_MODEL              # Model name as the provider expects it
+OLLAMA_PORT            # Ollama port (default: 11434); used to build the default LLM_BASE_URL
+MCP_PORT               # Port the MCP server runs on
+ALLOWED_TOOLS          # Comma-separated list of permitted MCP tools
+BACKEND_URL            # Backend base URL used by the Streamlit frontend (default: http://127.0.0.1:8001)
+FAITHFUL_EXTRACTION    # Set to "true" for red-team accuracy; bypasses LLM sanitization in response extraction
 ```
 
-See step 8 for full configuration instructions for each provider.
+See step 8 for per-provider configuration examples.
 
 ---
 

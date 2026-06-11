@@ -51,19 +51,22 @@ ALLOWED_TOOLS = {t.strip() for t in os.getenv("ALLOWED_TOOLS", "").split(",") if
 if not ALLOWED_TOOLS:
     raise RuntimeError("ALLOWED_TOOLS not configured in .env")
 
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
-
-if LLM_PROVIDER == "openai":
-    LLM_API_KEY = os.getenv("OPENAI_API_KEY", "")
-    LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
-    LLM_BASE_URL = "https://api.openai.com/v1"
-else:
-    OLLAMA_PORT = os.getenv("OLLAMA_PORT", "11434")
-    LLM_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:20b")
-    LLM_BASE_URL = f"http://localhost:{OLLAMA_PORT}/v1"
-    LLM_API_KEY = "ollama"
-
-LLM_BASE_URL = os.getenv("LLM_BASE_URL") or LLM_BASE_URL
+_ollama_port = os.getenv("OLLAMA_PORT", "11434")
+LLM_BASE_URL = (
+    os.getenv("LLM_BASE_URL")
+    or f"http://localhost:{_ollama_port}/v1"
+)
+LLM_API_KEY = (
+    os.getenv("LLM_API_KEY")
+    or os.getenv("OPENAI_API_KEY")
+    or "ollama"
+)
+LLM_MODEL = (
+    os.getenv("LLM_MODEL")
+    or os.getenv("OPENAI_MODEL")
+    or os.getenv("OLLAMA_MODEL")
+    or "llama3.2"
+)
 LLM_URL = f"{LLM_BASE_URL}/chat/completions"
 
 DATA_URL = _cfg.data.dataset_url
@@ -151,9 +154,7 @@ async def mcp_agent_add(request: QueryRequest, http_req: Request) -> dict:
         "Use tool calling when possible.\n"
     )
 
-    _headers = {"Content-Type": "application/json"}
-    if LLM_PROVIDER == "openai":
-        _headers["Authorization"] = f"Bearer {LLM_API_KEY}"
+    _headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LLM_API_KEY}"}
 
     async with httpx.AsyncClient(trust_env=False, timeout=_cfg.llm.extraction_timeout_seconds) as client:
         resp = await client.post(
@@ -204,7 +205,7 @@ async def mcp_agent_add(request: QueryRequest, http_req: Request) -> dict:
         logger.info("mcp_tool_called", tool=fn, args=args)
 
         return {
-            "llm_used": {"provider": LLM_PROVIDER, "url": LLM_URL, "model": LLM_MODEL},
+            "llm_used": {"base_url": LLM_BASE_URL, "model": LLM_MODEL},
             "llm_finish_reason": data["choices"][0].get("finish_reason"),
             "llm_tool_call": {"tool": fn, "args": args},
             "mcp_response": tool_resp,
@@ -235,7 +236,7 @@ async def mcp_agent_add(request: QueryRequest, http_req: Request) -> dict:
     logger.info("mcp_tool_called_fallback", tool=tool, args=args)
 
     return {
-        "llm_used": {"provider": LLM_PROVIDER, "url": LLM_URL, "model": LLM_MODEL},
+        "llm_used": {"base_url": LLM_BASE_URL, "model": LLM_MODEL},
         "llm_raw_content": content,
         "llm_plan": plan,
         "mcp_response": tool_resp,
