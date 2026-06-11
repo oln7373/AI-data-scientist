@@ -1,35 +1,40 @@
-# mcp_server.py
+"""MCP server exposing tools (ping, add_numbers, compose_email, send_email)."""
+
 import os
 import smtplib
 import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from dotenv import load_dotenv
 
+import structlog
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
 load_dotenv()
 
+logger = structlog.get_logger(__name__)
+
 mcp = FastMCP("Allstate Tools")
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _smtp_settings() -> dict:
-    """
-    Load SMTP config from environment variables.
+    """Load SMTP configuration from environment variables.
 
-    Required:
-        SMTP_HOST      e.g. smtp.gmail.com | smtp.office365.com | mail.company.com
-        SMTP_USER      sender login / address
-        SMTP_PASSWORD  password or app-password
+    Required env vars:
+        SMTP_HOST: e.g. smtp.gmail.com | smtp.office365.com
+        SMTP_USER: sender login / address
+        SMTP_PASSWORD: password or app-password
 
-    Optional:
-        SMTP_PORT      587 (default, STARTTLS) | 465 (SSL) | 25
-        SMTP_FROM      display "From" address  (defaults to SMTP_USER)
-        SMTP_TLS       starttls (default) | ssl | none
+    Optional env vars:
+        SMTP_PORT: 587 (default STARTTLS) | 465 (SSL) | 25
+        SMTP_FROM: display From address (defaults to SMTP_USER)
+        SMTP_TLS: starttls (default) | ssl | none
+
+    Returns:
+        Dict with keys host, port, user, password, from_addr, tls_mode.
+
+    Raises:
+        RuntimeError: If any required env var is missing.
     """
     host = os.getenv("SMTP_HOST")
     port = int(os.getenv("SMTP_PORT", "587"))
@@ -55,7 +60,17 @@ def _smtp_settings() -> dict:
 
 
 def _send_via_smtp(cfg: dict, recipient: str, msg_str: str, from_addr: str) -> None:
-    """Low-level SMTP dispatch — handles STARTTLS / SSL / plain connections."""
+    """Dispatch an email over SMTP, handling STARTTLS, SSL, and plain modes.
+
+    Args:
+        cfg: SMTP settings dict returned by _smtp_settings().
+        recipient: Destination email address.
+        msg_str: Fully-encoded MIME message string.
+        from_addr: Sender address for the SMTP envelope.
+
+    Raises:
+        RuntimeError: On authentication failure or any SMTP error.
+    """
     context = ssl.create_default_context()
 
     try:
@@ -72,7 +87,7 @@ def _send_via_smtp(cfg: dict, recipient: str, msg_str: str, from_addr: str) -> N
                 server.login(cfg["user"], cfg["password"])
                 server.sendmail(from_addr, recipient, msg_str)
 
-        else:  # no TLS — internal relay
+        else:
             with smtplib.SMTP(cfg["host"], cfg["port"]) as server:
                 if cfg["user"] and cfg["password"]:
                     server.login(cfg["user"], cfg["password"])
@@ -87,26 +102,47 @@ def _send_via_smtp(cfg: dict, recipient: str, msg_str: str, from_addr: str) -> N
         raise RuntimeError(f"SMTP error: {e}") from e
 
 
-# ---------------------------------------------------------------------------
-# MCP tools
-# ---------------------------------------------------------------------------
-
 @mcp.tool(description="Health check / connectivity test tool.")
 def ping(message: str = "hello") -> str:
+    """Return a pong response for connectivity testing.
+
+    Args:
+        message: Optional message to echo back.
+
+    Returns:
+        A pong string containing the echoed message.
+    """
     return f"pong: {message}"
 
 
 @mcp.tool(description="Add two numbers together and return the result.")
 def add_numbers(a: float, b: float) -> float:
+    """Add two numbers and return their sum.
+
+    Args:
+        a: First operand.
+        b: Second operand.
+
+    Returns:
+        The sum a + b.
+    """
     return a + b
 
 
 @mcp.tool(description="Compose a plain-text email body from subject/body fields (no sending).")
 def compose_email(recipient_email: str, subject: str, body: str) -> dict:
-    """
-    Returns the email payload for review before committing to send.
+    """Build an email payload for review before committing to send.
+
     Keeping compose and send as separate tools lets the agent (or a human)
     inspect the draft before any side-effects occur.
+
+    Args:
+        recipient_email: Destination address.
+        subject: Email subject line.
+        body: Plain-text body content.
+
+    Returns:
+        Dict with keys to, subject, body.
     """
     return {
         "to": recipient_email,
@@ -117,16 +153,24 @@ def compose_email(recipient_email: str, subject: str, body: str) -> dict:
 
 @mcp.tool(description="Send a plain-text email via SMTP. Works with any email provider.")
 def send_email(recipient_email: str, subject: str, body: str) -> str:
-    """
-    Send a plain-text email using SMTP credentials configured in the environment.
+    """Send a plain-text email using SMTP credentials from the environment.
 
     Provider quick-start:
-      Gmail        → SMTP_HOST=smtp.gmail.com          SMTP_PORT=587  SMTP_TLS=starttls
-      Outlook/O365 → SMTP_HOST=smtp.office365.com      SMTP_PORT=587  SMTP_TLS=starttls
-      Yahoo        → SMTP_HOST=smtp.mail.yahoo.com     SMTP_PORT=587  SMTP_TLS=starttls
-      Corporate    → SMTP_HOST=mail.company.com        SMTP_PORT=25   SMTP_TLS=none
+        Gmail        → SMTP_HOST=smtp.gmail.com          SMTP_PORT=587  SMTP_TLS=starttls
+        Outlook/O365 → SMTP_HOST=smtp.office365.com      SMTP_PORT=587  SMTP_TLS=starttls
+        Yahoo        → SMTP_HOST=smtp.mail.yahoo.com     SMTP_PORT=587  SMTP_TLS=starttls
+        Corporate    → SMTP_HOST=mail.company.com        SMTP_PORT=25   SMTP_TLS=none
 
-    Returns a confirmation string on success; raises RuntimeError on failure.
+    Args:
+        recipient_email: Destination address.
+        subject: Email subject line.
+        body: Plain-text body content.
+
+    Returns:
+        Confirmation string on success.
+
+    Raises:
+        RuntimeError: On SMTP or authentication failure.
     """
     cfg = _smtp_settings()
 
@@ -136,20 +180,12 @@ def send_email(recipient_email: str, subject: str, body: str) -> str:
     msg["Subject"] = subject
 
     _send_via_smtp(cfg, recipient_email, msg.as_string(), cfg["from_addr"])
+    logger.info("email_sent", recipient=recipient_email)
     return f"sent to: {recipient_email}"
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-#  __  __       _         ______               _   _             
-# |  \/  | __ _(_)_ __   |  ____|   _ _ __ ___| |_(_) ___  _ __  
-# | |\/| |/ _` | | '_ \  | |_ | | | | '__/ __| __| |/ _ \| '_ \ 
-# | |  | | (_| | | | | | |  _|| |_| | | | (__| |_| | (_) | | | |
-# |_|  |_|\__,_|_|_| |_| |_|   \__,_|_|  \___|\__|_|\___/|_| |_|
 
 if __name__ == "__main__":
     mcp.settings.port = int(os.getenv("MCP_PORT", "8005"))
     mcp.settings.host = os.getenv("MCP_HOST", "127.0.0.1")
+    logger.info("mcp_server_starting", port=mcp.settings.port, host=mcp.settings.host)
     mcp.run(transport="streamable-http")

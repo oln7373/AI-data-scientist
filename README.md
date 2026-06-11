@@ -44,6 +44,8 @@ This pathway demonstrates OpenAI-style function calling.
 
 Python 3.10+. All required packages are listed in `myenv.txt`.
 
+**Logging:** all modules use [structlog](https://www.structlog.org) for structured JSON logging. `print()` statements are not used in any committed code. Logs are emitted as machine-readable JSON to stdout. `structlog` must be installed (it is included in `myenv.txt`).
+
 ### LLM Backend (Required — choose one)
 
 **Option A — Ollama (local):** serves models on your own hardware. Requires a GPU for practical performance.
@@ -490,6 +492,49 @@ The API endpoint `/rag-query` allows users to perform semantic document queries.
 
 ---
 
+### `config.py`
+
+Central **configuration loader and logging setup** module.
+
+Responsibilities:
+
+- Defines Pydantic models (`LLMConfig`, `RAGConfig`, `RedteamConfig`, `MCPConfig`, etc.) that validate `configs/default.json` at startup
+- Exposes `get_config() -> AppConfig` — a cached singleton used by every module that needs runtime parameters
+- Provides `configure_logging()` — configures structlog with JSON output; called once at each application entry point
+
+All magic numbers (timeouts, temperatures, thresholds, paths) are read from `configs/default.json` via this module rather than being hard-coded in source files.
+
+---
+
+### `configs/default.json`
+
+Single source of truth for all **runtime parameters** — timeouts, temperatures, model paths, dataset URLs, privacy thresholds, and MCP configuration.
+
+All modules load their parameters from this file through `config.py`. Do not hard-code numeric values in source code; add them here instead.
+
+To override a value for a specific run, pass it as a CLI argument or add a per-experiment config file. See `config.py` for the full schema.
+
+---
+
+### `redteam_controller.py`
+
+Automated **red-team controller** that attacks the backend's privacy policy enforcement.
+
+Features:
+
+- 20 static adversarial prompts across four categories: `ssn_leak`, `restricted_leak`, `k_anonymity`, `prompt_injection`
+- Deterministic SSN regex check (always applied)
+- LLM-as-judge evaluation for each attack
+- `--dynamic N` flag to generate additional LLM-crafted attacks at runtime
+- `--out FILE` flag to save full results as JSON
+- `--static-only` flag to skip the LLM judge and use only deterministic checks
+
+Uses the same `LLM_PROVIDER` / `OPENAI_API_KEY` / `OPENAI_MODEL` settings from `.env`.
+
+**Important:** for accurate results, start the backend with `FAITHFUL_EXTRACTION=true` so the extraction layer does not sanitize leaked data before it reaches the grader.
+
+---
+
 ### `email_utils.py`
 
 Utility module supporting **email extraction and formatting**.
@@ -520,21 +565,21 @@ Handles:
 
 ### `send-email.py`
 
-Standalone script demonstrating how to send an email using the Gmail API.
+Standalone script for sending a plain-text email via **SMTP** (no OAuth, no Google APIs).
 
-Primarily used for testing Gmail API integration independently of the MCP system.
+Works with any SMTP provider (Gmail app passwords, Outlook, Yahoo, corporate relay). Configured entirely through environment variables — see the script's module docstring for the full variable list.
 
 ---
 
 ### `send-email-attach.py`
 
-Extended Gmail utility that supports sending emails with file attachments.
+Extended SMTP script that adds support for **optional file attachments**.
 
 Provides:
 
-- MIME multipart message creation
-- attachment encoding
-- Gmail API message submission
+- MIME multipart message construction
+- binary attachment encoding (base64)
+- SMTP delivery via the same provider configuration as `send-email.py`
 
 Useful for sending analysis outputs or generated images as attachments.
 
@@ -559,14 +604,16 @@ Example environment configuration file.
 Defines required environment variables. Key variables:
 
 ```
-LLM_PROVIDER        # "ollama" or "openai"
-LLM_BASE_URL        # optional override for OpenRouter, Groq, etc.
-OPENAI_API_KEY      # API key for OpenAI-compatible providers
-OPENAI_MODEL        # model name (e.g. gpt-4o, meta-llama/llama-3.1-8b-instruct:free)
-OLLAMA_PORT         # port Ollama is listening on (Ollama only)
-OLLAMA_MODEL        # model name pulled in Ollama (Ollama only)
-MCP_PORT            # port the MCP server runs on
-ALLOWED_TOOLS       # comma-separated list of permitted MCP tools
+LLM_PROVIDER           # "ollama" or "openai"
+LLM_BASE_URL           # optional override for OpenRouter, Groq, etc.
+OPENAI_API_KEY         # API key for OpenAI-compatible providers
+OPENAI_MODEL           # model name (e.g. gpt-4o, meta-llama/llama-3.1-8b-instruct:free)
+OLLAMA_PORT            # port Ollama is listening on (Ollama only)
+OLLAMA_MODEL           # model name pulled in Ollama (Ollama only)
+MCP_PORT               # port the MCP server runs on
+ALLOWED_TOOLS          # comma-separated list of permitted MCP tools
+BACKEND_URL            # backend base URL used by the Streamlit frontend (default: http://127.0.0.1:8001)
+FAITHFUL_EXTRACTION    # set to "true" for red-team accuracy; bypasses LLM sanitization in response extraction
 ```
 
 See step 8 for full configuration instructions for each provider.

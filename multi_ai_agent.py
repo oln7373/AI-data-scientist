@@ -1,59 +1,52 @@
-"""
-multi_ai_agent.py
+"""Multi-agent AI data scientist pipeline with MCP tool integration.
 
-This file provides:
-1) /mcp_add_demo      (simple MCP tool demo)
-2) /mcp_agent_add     (LLM tool-calling via Ollama -> allowlist -> MCP)
-3) /mcp_tools         (list tools from MCP server)
-4) /multi_ai_agent    (RESTORED AutoGen multi-agent "data scientist" pipeline,
-                       with TRUE tool-calling via MCP-backed AutoGen tools,
-                       and OPTIONAL email sending via MCP send_email tool)
+Provides:
+    /mcp_add_demo      Simple MCP tool demo (arithmetic via MCP).
+    /mcp_agent_add     LLM tool-calling via allowlist-enforced MCP.
+    /mcp_tools         List tools from the MCP server.
+    /multi_ai_agent    AutoGen multi-agent data scientist pipeline with
+                       true tool-calling via MCP-backed AutoGen tools and
+                       optional email delivery via the MCP send_email tool.
 
 Design:
-- Keep the old AutoGen pipeline behavior (code-gen + Executor).
-- Keep MCP allowlist enforcement on the backend.
-- Email side-effects go through MCP (send_email tool), not direct Gmail code.
-- For /multi_ai_agent: expose MCP tools to AutoGen as real callable tools.
-  The tool implementation bounces from AutoGen's worker thread back to the
-  FastAPI event loop using anyio.from_thread.run(...)
+    - MCP allowlist enforcement is applied on the backend for all tool calls.
+    - Email side-effects go through MCP (send_email tool), not direct code.
+    - MCP tools are exposed to AutoGen as real callable tools whose
+      implementations bounce from AutoGen worker threads back to the FastAPI
+      event loop using anyio.from_thread.run(...).
 """
 
+import json
 import os
 import re
-import json
+
+import anyio
+import autogen
 import httpx
 import requests
-import anyio
-
+import structlog
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from response_extractor import extract_relevant_output
-
-# AutoGen (old multi-agent pipeline)
-import autogen
-
-# Email helpers (parsing + formatting)
+from config import get_config
 from email_utils import (
-    extract_email_and_clean_prompt,
     compose_email_payload,
+    extract_email_and_clean_prompt,
     make_absolute_image_url,
 )
+from response_extractor import extract_relevant_output
 
 load_dotenv()
 
+logger = structlog.get_logger(__name__)
+
 router = APIRouter()
 
-# -----------------------------
-# Backend policy + Ollama config
-# -----------------------------
-ALLOWED_TOOLS = set(
-    t.strip()
-    for t in os.getenv("ALLOWED_TOOLS", "").split(",")
-    if t.strip()
-)
+_cfg = get_config()
+
+ALLOWED_TOOLS = {t.strip() for t in os.getenv("ALLOWED_TOOLS", "").split(",") if t.strip()}
 
 if not ALLOWED_TOOLS:
     raise RuntimeError("ALLOWED_TOOLS not configured in .env")
@@ -70,32 +63,55 @@ else:
     LLM_BASE_URL = f"http://localhost:{OLLAMA_PORT}/v1"
     LLM_API_KEY = "ollama"
 
-# Allow explicit base URL override (e.g. OpenRouter, Groq)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL") or LLM_BASE_URL
 LLM_URL = f"{LLM_BASE_URL}/chat/completions"
 
+DATA_URL = _cfg.data.dataset_url
+IMAGE_DIR = _cfg.data.image_dir
+AGENT_CSV = _cfg.data.dataset_filename
+SERVER_CSV_PATH = os.path.join(IMAGE_DIR, AGENT_CSV)
+
+os.makedirs(IMAGE_DIR, exist_ok=True)
+
 
 class QueryRequest(BaseModel):
+    """Request body for all agent query endpoints."""
+
     question: str
 
 
-# -----------------------------
-# MCP demo endpoints (keep)
-# -----------------------------
 @router.post("/mcp_add_demo")
-async def mcp_add_demo(request: QueryRequest, http_req: Request):
+async def mcp_add_demo(request: QueryRequest, http_req: Request) -> dict:
+    """Demonstrate direct MCP tool invocation for addition.
+
+    Parses two numbers from the prompt and calls the MCP add_numbers tool
+    directly (no LLM involved).
+
+    Args:
+        request: Body containing a question with an expression like ``5 + 7``.
+        http_req: FastAPI request used to access the MCP client from app state.
+
+    Returns:
+        The MCP tool result dict.
+
+    Raises:
+        HTTPException: 400 if the expression cannot be parsed or the tool is
+            not on the allowlist. 503 if the MCP client is unavailable.
+    """
     mcp_http = getattr(http_req.app.state, "mcp_http", None)
     if mcp_http is None:
         raise HTTPException(status_code=503, detail="MCP HTTP client not available")
 
     m = re.search(r"(-?\d+(?:\.\d+)?)\s*\+\s*(-?\d+(?:\.\d+)?)", request.question)
     if not m:
-        raise HTTPException(status_code=400, detail="Provide a question containing something like '5 + 7'")
+        raise HTTPException(
+            status_code=400,
+            detail="Provide a question containing something like '5 + 7'",
+        )
 
     a = float(m.group(1))
     b = float(m.group(2))
 
-    # Allowlist check
     if "add_numbers" not in ALLOWED_TOOLS:
         raise HTTPException(status_code=400, detail="Tool not allowed by policy: add_numbers")
 
@@ -103,7 +119,23 @@ async def mcp_add_demo(request: QueryRequest, http_req: Request):
 
 
 @router.post("/mcp_agent_add")
-async def mcp_agent_add(request: QueryRequest, http_req: Request):
+async def mcp_agent_add(request: QueryRequest, http_req: Request) -> dict:
+    """LLM-driven tool-calling demonstration using MCP-backed tools.
+
+    Sends the user prompt to the configured LLM, which emits OpenAI-style
+    tool_calls. The backend validates the requested tool against the allowlist
+    before invoking it via MCP.
+
+    Args:
+        request: Body containing the user's question.
+        http_req: FastAPI request used to access the MCP client from app state.
+
+    Returns:
+        Dict containing llm_used, tool call details, and MCP response.
+
+    Raises:
+        HTTPException: 400/502/503 on policy violations or LLM errors.
+    """
     mcp_http = getattr(http_req.app.state, "mcp_http", None)
     if mcp_http is None:
         raise HTTPException(status_code=503, detail="MCP HTTP client not available")
@@ -123,13 +155,13 @@ async def mcp_agent_add(request: QueryRequest, http_req: Request):
     if LLM_PROVIDER == "openai":
         _headers["Authorization"] = f"Bearer {LLM_API_KEY}"
 
-    async with httpx.AsyncClient(trust_env=False, timeout=60.0) as client:
+    async with httpx.AsyncClient(trust_env=False, timeout=_cfg.llm.extraction_timeout_seconds) as client:
         resp = await client.post(
             LLM_URL,
             headers=_headers,
             json={
                 "model": LLM_MODEL,
-                "temperature": 0.0,
+                "temperature": _cfg.llm.temperature_agent,
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": request.question},
@@ -138,16 +170,21 @@ async def mcp_agent_add(request: QueryRequest, http_req: Request):
         )
 
     if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"LLM error {resp.status_code}: {resp.text[:1000]}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"LLM error {resp.status_code}: {resp.text[:1000]}",
+        )
 
     data = resp.json()
 
     try:
         msg = data["choices"][0]["message"]
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Unexpected LLM response shape: {e}. Raw={str(data)[:1000]}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Unexpected LLM response shape: {e}. Raw={str(data)[:1000]}",
+        ) from e
 
-    # ---- Preferred: OpenAI-style tool_calls ----
     tool_calls = msg.get("tool_calls") or []
     if tool_calls:
         try:
@@ -155,12 +192,16 @@ async def mcp_agent_add(request: QueryRequest, http_req: Request):
             arg_str = tool_calls[0]["function"].get("arguments", "{}")
             args = json.loads(arg_str) if isinstance(arg_str, str) else (arg_str or {})
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Failed to parse tool_calls: {e}. Raw={str(tool_calls)[:1000]}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to parse tool_calls: {e}. Raw={str(tool_calls)[:1000]}",
+            ) from e
 
         if fn not in ALLOWED_TOOLS:
             raise HTTPException(status_code=400, detail=f"Tool not allowed by policy: {fn}")
 
         tool_resp = await mcp_http.tool_call(fn, args)
+        logger.info("mcp_tool_called", tool=fn, args=args)
 
         return {
             "llm_used": {"provider": LLM_PROVIDER, "url": LLM_URL, "model": LLM_MODEL},
@@ -170,12 +211,11 @@ async def mcp_agent_add(request: QueryRequest, http_req: Request):
             "allowed_tools": sorted(ALLOWED_TOOLS),
         }
 
-    # ---- Fallback: JSON in content ----
     content = (msg.get("content") or "").strip()
     if not content:
         raise HTTPException(
             status_code=502,
-            detail=f"Ollama returned neither tool_calls nor content. Raw response: {str(data)[:1000]}",
+            detail=f"LLM returned neither tool_calls nor content. Raw response: {str(data)[:1000]}",
         )
 
     try:
@@ -183,12 +223,16 @@ async def mcp_agent_add(request: QueryRequest, http_req: Request):
         tool = plan["tool"]
         args = plan["args"]
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"LLM did not return valid JSON plan. Got: {content!r}. Error: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"LLM did not return valid JSON plan. Got: {content!r}. Error: {e}",
+        ) from e
 
     if tool not in ALLOWED_TOOLS:
         raise HTTPException(status_code=400, detail=f"Tool not allowed by policy: {tool}")
 
     tool_resp = await mcp_http.tool_call(tool, args)
+    logger.info("mcp_tool_called_fallback", tool=tool, args=args)
 
     return {
         "llm_used": {"provider": LLM_PROVIDER, "url": LLM_URL, "model": LLM_MODEL},
@@ -200,43 +244,23 @@ async def mcp_agent_add(request: QueryRequest, http_req: Request):
 
 
 @router.get("/mcp_tools")
-async def mcp_tools(http_req: Request):
+async def mcp_tools(http_req: Request) -> dict:
+    """Return the list of tools currently exposed by the MCP server.
+
+    Args:
+        http_req: FastAPI request used to access the MCP client from app state.
+
+    Raises:
+        HTTPException: 503 if the MCP client is unavailable.
+    """
     mcp_http = getattr(http_req.app.state, "mcp_http", None)
     if mcp_http is None:
         raise HTTPException(503, "MCP HTTP client not available")
     return await mcp_http.tools_list()
 
 
-# ============================================================
-# RESTORED: Multi-agent "Agentic AI Data Scientist" pipeline
-# ============================================================
-
-# -----------------------------
-# Dataset plumbing (old behavior)
-# -----------------------------
-DATA_URL = "https://raw.githubusercontent.com/oln7373/AI-data-scientist/refs/heads/main/customer_shopping_data.csv"
-
-IMAGE_DIR = "data"
-os.makedirs(IMAGE_DIR, exist_ok=True)
-
-AGENT_CSV = "customer_shopping_data.csv"
-SERVER_CSV_PATH = os.path.join(IMAGE_DIR, AGENT_CSV)
-
-
-def ensure_dataset():
-    """
-    Download dataset to data/customer_shopping_data.csv so that
-    AutoGen's Executor (work_dir=data) can read it by filename.
-    """
-    if not os.path.exists(SERVER_CSV_PATH):
-        r = requests.get(DATA_URL, timeout=30)
-        r.raise_for_status()
-        with open(SERVER_CSV_PATH, "wb") as f:
-            f.write(r.content)
-
-
-# Dataset schema + privacy rules (kept from your old pipeline)
-data_schema = r"""Don't assume or fabricate dataset.
+# Dataset schema + privacy rules
+_DATA_SCHEMA = r"""Don't assume or fabricate dataset.
 
 invoice_no: Invoice number. Nominal. A combination of the letter 'I' and a 6-digit integer uniquely assigned to each row.
 customer_id: Customer identifier. Nominal. A token of the form 3 uppercase letters followed by a 6-digit integer (regex: [A-Z]{3}\d{6}) uniquely assigned to each row.
@@ -263,32 +287,26 @@ Privacy & disclosure rules (must follow):
    - Restricted customers MUST be included in overall statistical calculations (counts, totals, means, distributions), BUT ONLY as aggregated results that do not identify individuals.
    - Only provide aggregate results that meet a minimum group size (k-anonymity): do not report any group/segment with fewer than K customers (use K=10 unless explicitly configured otherwise). If a requested breakdown would create small groups, coarsen the grouping (e.g., broader categories, fewer bins) or refuse that breakdown.
    - When providing aggregates, avoid outputs that trivially isolate one restricted individual (e.g., filtering to one customer_id, one invoice_no, or a very narrow combination of attributes).
-4) If a request attempts to access restricted individuals’ data, respond with allowed aggregate statistics (e.g., totals by category, mall-level totals, overall trends) without exposing individual-level restricted records.
+4) If a request attempts to access restricted individuals' data, respond with allowed aggregate statistics (e.g., totals by category, mall-level totals, overall trends) without exposing individual-level restricted records.
 """
 
-common_instruct = (
+_COMMON_INSTRUCT = (
     "Do not write code to send email. "
     "If the user requests email delivery, note that the backend will send it automatically."
 )
 
-# -----------------------------
-# AutoGen: LLM config (Ollama OpenAI-compatible endpoint)
-# -----------------------------
-config_list = {
+_config_list = {
     "config_list": [
         {
             "model": LLM_MODEL,
             "base_url": LLM_BASE_URL,
             "api_key": LLM_API_KEY,
-            "temperature": 0.0,
+            "temperature": _cfg.llm.temperature_agent,
             "price": [0, 0],
         }
     ]
 }
 
-# -----------------------------
-# AutoGen agents (tools-first policy)
-# -----------------------------
 user_proxy = autogen.UserProxyAgent(
     name="Admin",
     system_message="You are Admin, a proxy for the human user.",
@@ -298,7 +316,7 @@ user_proxy = autogen.UserProxyAgent(
 
 coder = autogen.AssistantAgent(
     name="DataScientist",
-    llm_config=config_list,
+    llm_config=_config_list,
     system_message=f"""
 TOOLS-FIRST POLICY (CRITICAL):
 - Prefer MCP tool calls over writing Python whenever a suitable tool exists.
@@ -324,15 +342,15 @@ Use the code from FileReader and Summarizer to answer the question being asked.
 Ensure correctness of any reused code from the group chat.
 
 The schema for dataset is:
-{data_schema}
+{_DATA_SCHEMA}
 
-{common_instruct}
+{_COMMON_INSTRUCT}
 """,
 )
 
 filereader = autogen.AssistantAgent(
     name="FileReader",
-    llm_config=config_list,
+    llm_config=_config_list,
     system_message=f"""
 ROLE:
 You are responsible ONLY for loading the dataset and verifying it can be read.
@@ -357,15 +375,15 @@ RULES:
 Invoice number and Customer ID are personal information and must not be exposed.
 
 Dataset schema:
-{data_schema}
+{_DATA_SCHEMA}
 
-{common_instruct}
+{_COMMON_INSTRUCT}
 """,
 )
 
 summarizer_agent = autogen.AssistantAgent(
     name="Summarizer",
-    llm_config=config_list,
+    llm_config=_config_list,
     system_message=f"""
 ROLE:
 You summarize the dataset.
@@ -386,15 +404,15 @@ RULES:
 - No explanations or prose.
 
 Dataset schema:
-{data_schema}
+{_DATA_SCHEMA}
 
-{common_instruct}
+{_COMMON_INSTRUCT}
 """,
 )
 
 viz = autogen.AssistantAgent(
     name="Visualization",
-    llm_config=config_list,
+    llm_config=_config_list,
     system_message=f"""
 ROLE:
 You create visualizations for dataset analysis.
@@ -414,9 +432,9 @@ RULES:
 - Use existing code produced by other agents when available.
 
 Dataset schema:
-{data_schema}
+{_DATA_SCHEMA}
 
-{common_instruct}
+{_COMMON_INSTRUCT}
 """,
 )
 
@@ -443,22 +461,18 @@ groupchat = autogen.GroupChat(
 manager = autogen.GroupChatManager(
     system_message=(
         "You are a chat manager responsible for orchestrating the agents.\n\n"
-
         "GLOBAL POLICY (CRITICAL): TOOLS-FIRST, CODE-SECOND.\n"
         "- If an appropriate MCP tool exists for the request, instruct the responsible agent to call that tool.\n"
         "- Only if NO appropriate tool exists should agents write Python for the Executor.\n"
         "- NEVER allow Python code that calls MCP tools (e.g., add_numbers(...)).\n\n"
-
         "ARITHMETIC RULE:\n"
         "- For simple arithmetic tasks like '3 + 5', route directly to DataScientist to call add_numbers.\n"
         "- Do NOT involve dataset agents for arithmetic tasks.\n\n"
-
         "AGENT SELECTION:\n"
         "- File reading → FileReader\n"
         "- Dataset summary → Summarizer\n"
         "- Data analysis or computation → DataScientist\n"
         "- Visualization → Visualization\n\n"
-
         "If an agent is not relevant to the task, it must respond with exactly: SKIP.\n"
         "If Python code is produced, send it to Executor to run."
     ),
@@ -471,91 +485,109 @@ manager = autogen.GroupChatManager(
         )
     ),
     groupchat=groupchat,
-    llm_config=config_list,
+    llm_config=_config_list,
 )
 
 
+def _register_autogen_tool(agent: autogen.AssistantAgent, fn, name: str, description: str) -> None:
+    """Register a callable as an LLM-visible tool on an AutoGen AssistantAgent.
 
+    Args:
+        agent: The AutoGen agent to register the tool on.
+        fn: The callable implementing the tool.
+        name: Tool name exposed to the LLM.
+        description: Human-readable description for the LLM.
 
-def _register_autogen_tool(agent, fn, name: str, description: str):
+    Raises:
+        RuntimeError: If the AutoGen version does not support any known
+            registration API.
     """
-    AutoGen APIs differ across versions. This tries the common patterns.
-    """
-    # register_for_llm pattern
     if hasattr(agent, "register_for_llm"):
         agent.register_for_llm(name=name, description=description)(fn)
         return
 
-    # Some versions may support a generic register_function on agent
     if hasattr(agent, "register_function"):
         agent.register_function(fn, name=name, description=description)
         return
 
-    raise RuntimeError(f"AutoGen agent {getattr(agent, 'name', str(agent))} does not support tool registration APIs.")
+    raise RuntimeError(
+        f"AutoGen agent {getattr(agent, 'name', str(agent))} does not support tool registration APIs."
+    )
 
 
-def _register_autogen_execution(proxy_agent, fn):
-    """
-    Register a function for execution. API differs across versions.
+def _register_autogen_execution(proxy_agent: autogen.UserProxyAgent, fn) -> None:
+    """Register a callable for execution on an AutoGen UserProxyAgent.
+
+    Args:
+        proxy_agent: The proxy agent that will execute tool calls.
+        fn: The callable to register.
+
+    Raises:
+        RuntimeError: If the AutoGen version does not support any known
+            execution registration API.
     """
     if hasattr(proxy_agent, "register_for_execution"):
         proxy_agent.register_for_execution()(fn)
         return
 
-    # Some versions expose a function map dict
     if hasattr(proxy_agent, "function_map") and isinstance(proxy_agent.function_map, dict):
         proxy_agent.function_map[fn.__name__] = fn
         return
 
-    # Last resort: do nothing (LLM may still "call" but it won't execute)
-    raise RuntimeError("This AutoGen version does not support registering executable functions on the proxy agent.")
+    raise RuntimeError(
+        "This AutoGen version does not support registering executable functions on the proxy agent."
+    )
+
+
+def ensure_dataset() -> None:
+    """Download the dataset CSV to the image/work directory if it is missing."""
+    if not os.path.exists(SERVER_CSV_PATH):
+        logger.info("dataset_downloading", url=DATA_URL)
+        r = requests.get(DATA_URL, timeout=_cfg.llm.extraction_timeout_seconds)
+        r.raise_for_status()
+        with open(SERVER_CSV_PATH, "wb") as f:
+            f.write(r.content)
+        logger.info("dataset_downloaded", path=SERVER_CSV_PATH)
 
 
 @router.post("/multi_ai_agent")
-async def multi_ai_agent_query(request: QueryRequest, http_req: Request):
-    """
-    Restored old multi-agent pipeline.
+async def multi_ai_agent_query(request: QueryRequest, http_req: Request) -> dict:
+    """Run the AutoGen multi-agent data scientist pipeline.
 
-    Optional behavior:
-    - If user includes an email address in the prompt, we will email the result
-      via MCP send_email tool (ONLY if allowed by ALLOWED_TOOLS).
+    Optionally sends results via email if the prompt contains an email address.
+    MCP tools are exposed to AutoGen agents as real callable tools whose
+    implementations execute via the backend's already-connected MCP client.
 
-    Tool-calling behavior:
-    - Exposes MCP tools (currently: add_numbers) to AutoGen as real tools.
-    - Tool implementation runs via the backend's already-connected MCP client.
+    Args:
+        request: Body containing the user's question.
+        http_req: FastAPI request used to access the MCP client from app state.
+
+    Returns:
+        Dict with keys type/content (text result) or type/image_url (image),
+        plus optional emailed_to.
+
+    Raises:
+        HTTPException: 500/503/504 on agent failure, MCP unavailability, or timeout.
     """
-    # MCP client must exist
     mcp_http = getattr(http_req.app.state, "mcp_http", None)
     if mcp_http is None:
         raise HTTPException(status_code=503, detail="MCP HTTP client not available")
 
-    # Ensure dataset without blocking loop
     await anyio.to_thread.run_sync(ensure_dataset)
 
-    # Extract email + clean question
     email, cleaned_question = extract_email_and_clean_prompt(request.question)
-
-    # Rewrite any URL into agent-visible filename
     cleaned_question = re.sub(r"https?://\S+", AGENT_CSV, cleaned_question)
 
-    # ----------------------------
-    # MCP-backed AutoGen tools
-    # ----------------------------
-    # async implementation that uses the already-connected MCP client
-    async def _mcp_add_numbers(a: float, b: float):
+    async def _mcp_add_numbers(a: float, b: float) -> object:
         resp = await mcp_http.tool_call("add_numbers", {"a": a, "b": b})
-
-        # Try to return a clean scalar for the LLM
         try:
             return resp["result"]["structuredContent"]["result"]
         except Exception:
             return resp
 
-    # sync wrapper callable from AutoGen's worker thread
-    def add_numbers(a: float, b: float):
+    def add_numbers(a: float, b: float) -> object:
         return anyio.from_thread.run(_mcp_add_numbers, a, b)
 
-    # Register tool for THIS request lifecycle
     try:
         _register_autogen_execution(user_proxy, add_numbers)
         for agent in [filereader, summarizer_agent, coder, viz]:
@@ -566,11 +598,12 @@ async def multi_ai_agent_query(request: QueryRequest, http_req: Request):
                 description="Add two numbers a and b using the MCP add_numbers tool. Returns the sum.",
             )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to register AutoGen tools: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to register AutoGen tools: {e}") from e
 
-    # Run AutoGen (blocking) in a thread with timeout
+    logger.info("multi_agent_start", question=cleaned_question[:120])
+
     try:
-        with anyio.fail_after(180):
+        with anyio.fail_after(_cfg.llm.agent_timeout_seconds):
             chat_result = await anyio.to_thread.run_sync(
                 lambda: user_proxy.initiate_chat(
                     manager,
@@ -578,12 +611,11 @@ async def multi_ai_agent_query(request: QueryRequest, http_req: Request):
                     summary_method="last_msg",
                 )
             )
-    except TimeoutError:
-        raise HTTPException(status_code=504, detail="Agent timed out while processing the request")
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail="Agent timed out while processing the request") from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Agent execution failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Agent execution failed: {e}") from e
 
-    # Decide what to return
     result = extract_relevant_output(
         user_question=cleaned_question,
         chat_history=chat_result.chat_history,
@@ -593,7 +625,8 @@ async def multi_ai_agent_query(request: QueryRequest, http_req: Request):
         llm_api_key=LLM_API_KEY,
     )
 
-    # If email present, send via MCP (side-effect)
+    logger.info("multi_agent_complete", result_type=result.get("type"))
+
     emailed_to = None
     if email:
         if "send_email" not in ALLOWED_TOOLS:
@@ -618,8 +651,10 @@ async def multi_ai_agent_query(request: QueryRequest, http_req: Request):
                     {"recipient_email": email, "subject": subject, "body": body},
                 )
                 emailed_to = email
+                logger.info("email_dispatched", recipient=email)
             except Exception as e:
                 emailed_to = f"ERROR: {e}"
+                logger.error("email_dispatch_failed", error=str(e))
 
     out = dict(result)
     if emailed_to:
@@ -627,8 +662,16 @@ async def multi_ai_agent_query(request: QueryRequest, http_req: Request):
     return out
 
 
-@router.get("/get_image/{filename}", name="get_image")
-def get_image(filename: str):
+@router.get("/get_image/{filename}", name="get_image", response_model=None)
+def get_image(filename: str) -> FileResponse | dict:
+    """Serve a generated image file by name.
+
+    Args:
+        filename: Base filename of the image (no path components).
+
+    Returns:
+        FileResponse for the PNG, or an error dict if not found.
+    """
     safe_name = os.path.basename(filename)
     image_path = os.path.join(IMAGE_DIR, safe_name)
     if not os.path.exists(image_path):

@@ -1,6 +1,8 @@
+import os
+
+import base64
 import requests
 import streamlit as st
-import base64
 
 FIGURES_DIR = "figures" #subfolder containing the images
 
@@ -94,7 +96,12 @@ st.markdown(f"""
 
 
 # ✅ Background image setup (without logo in it)
-def set_background(image_file):
+def set_background(image_file: str) -> None:
+    """Set a full-page background image for the Streamlit app.
+
+    Args:
+        image_file: Path to the background image file.
+    """
     with open(image_file, "rb") as img_file:
         encoded_bg = base64.b64encode(img_file.read()).decode()
 
@@ -114,7 +121,12 @@ def set_background(image_file):
 
 
     
-def add_fixed_logo(logo_path):
+def add_fixed_logo(logo_path: str) -> None:
+    """Inject a fixed-position header bar with the Northwestern logo.
+
+    Args:
+        logo_path: Path to the logo image file.
+    """
     with open(logo_path, "rb") as f:
         data = f.read()
         encoded = base64.b64encode(data).decode()
@@ -166,7 +178,7 @@ add_fixed_logo(f"{FIGURES_DIR}/nu_logo-2.png")          # logo inserted separate
 #BACKEND_URL="http://wcdl3.deeplearninglab.northwestern.edu:8000/api"
 #BACKEND_URL = "https://genai-hub.mlds.northwestern.edu/api"
 # BACKEND_URL = "https://genai-hub.centerfordeeplearning.northwestern.edu/api"
-BACKEND_URL = "http://127.0.0.1:8001"
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8001")
 
 
 agent_system_image = f"{FIGURES_DIR}/create-agent.png"

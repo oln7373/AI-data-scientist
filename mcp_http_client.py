@@ -1,16 +1,33 @@
-# mcp_http_client.py
-import httpx
+"""Minimal MCP JSON-RPC HTTP client.
+
+Uses the same HTTP calls verified with curl.
+Avoids the official streamable_http_client which hangs in this environment.
+"""
+
 import json
 
+import httpx
+import structlog
 
+from config import get_config
 
+logger = structlog.get_logger(__name__)
 
 
 def _parse_response(resp: httpx.Response) -> dict:
-    """Handle both plain JSON and SSE-wrapped JSON responses."""
+    """Parse a response that may be plain JSON or SSE-wrapped JSON.
+
+    Args:
+        resp: The raw httpx response.
+
+    Returns:
+        Parsed response as a dict.
+
+    Raises:
+        RuntimeError: If an SSE response contains no data line.
+    """
     content_type = resp.headers.get("content-type", "")
     if "text/event-stream" in content_type:
-        # Extract the data: line from the SSE payload
         for line in resp.text.splitlines():
             if line.startswith("data:"):
                 return json.loads(line[len("data:"):].strip())
@@ -19,17 +36,30 @@ def _parse_response(resp: httpx.Response) -> dict:
 
 
 class MCPHttpClient:
-    """
-    Minimal MCP JSON-RPC client using the same HTTP calls you verified with curl.
-    Avoids the official streamable_http_client (which is hanging in this environment).
-    """
+    """Minimal MCP JSON-RPC client over plain HTTP."""
 
-    def __init__(self, url: str):
+    def __init__(self, url: str) -> None:
+        """Initialise the client.
+
+        Args:
+            url: Full URL of the MCP server endpoint (e.g. http://127.0.0.1:8005/mcp).
+        """
         self.url = url.rstrip("/")
         self.session_id: str | None = None
+        self._timeout = get_config().mcp.http_client_timeout_seconds
+        self._protocol_version = get_config().mcp.protocol_version
 
     async def initialize(self) -> dict:
-        async with httpx.AsyncClient(trust_env=False, timeout=30.0) as client:
+        """Perform the MCP handshake and store the session ID.
+
+        Returns:
+            The parsed initialize response dict.
+
+        Raises:
+            RuntimeError: If the server does not return a session ID header.
+            httpx.HTTPStatusError: On non-2xx responses.
+        """
+        async with httpx.AsyncClient(trust_env=False, timeout=self._timeout) as client:
             resp = await client.post(
                 self.url,
                 headers={
@@ -41,7 +71,7 @@ class MCPHttpClient:
                     "id": 0,
                     "method": "initialize",
                     "params": {
-                        "protocolVersion": "2025-06-18",
+                        "protocolVersion": self._protocol_version,
                         "clientInfo": {"name": "fastapi", "version": "0.1"},
                         "capabilities": {},
                     },
@@ -52,13 +82,19 @@ class MCPHttpClient:
             if not sid:
                 raise RuntimeError("Missing mcp-session-id header on initialize response")
             self.session_id = sid
+            logger.info("mcp_session_initialized", session_id=sid)
             return _parse_response(resp)
 
     async def tools_list(self) -> dict:
+        """List tools available on the MCP server.
+
+        Returns:
+            Parsed tools/list response dict.
+        """
         if not self.session_id:
             await self.initialize()
 
-        async with httpx.AsyncClient(trust_env=False, timeout=30.0) as client:
+        async with httpx.AsyncClient(trust_env=False, timeout=self._timeout) as client:
             resp = await client.post(
                 self.url,
                 headers={
@@ -77,10 +113,19 @@ class MCPHttpClient:
             return _parse_response(resp)
 
     async def tool_call(self, name: str, arguments: dict) -> dict:
+        """Invoke a named tool on the MCP server.
+
+        Args:
+            name: The tool name as registered on the MCP server.
+            arguments: Keyword arguments to pass to the tool.
+
+        Returns:
+            Parsed tools/call response dict.
+        """
         if not self.session_id:
             await self.initialize()
 
-        async with httpx.AsyncClient(trust_env=False, timeout=30.0) as client:
+        async with httpx.AsyncClient(trust_env=False, timeout=self._timeout) as client:
             resp = await client.post(
                 self.url,
                 headers={

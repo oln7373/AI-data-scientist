@@ -1,10 +1,6 @@
-"""
-response_extractor.py
+"""LLM-powered extraction of the final user-facing answer from an AutoGen trace.
 
-LLM-powered extraction of the final user-facing answer from an AutoGen-style
-backend reasoning trace.
-
-Intended usage from multi_ai_agent.py:
+Intended usage from multi_ai_agent.py::
 
     from response_extractor import extract_relevant_output
 
@@ -12,8 +8,9 @@ Intended usage from multi_ai_agent.py:
         user_question=cleaned_question,
         chat_history=chat_result.chat_history,
         image_dir=IMAGE_DIR,
-        ollama_url=OLLAMA_URL,
-        ollama_model=OLLAMA_MODEL,
+        llm_url=LLM_URL,
+        llm_model=LLM_MODEL,
+        llm_api_key=LLM_API_KEY,
     )
 
 Red-teaming note:
@@ -29,38 +26,48 @@ import ast
 import json
 import os
 import re
-from typing import Any, Dict, List, Optional
 
 import requests
+import structlog
 
+from config import get_config
+
+logger = structlog.get_logger(__name__)
 
 FAITHFUL_EXTRACTION = os.getenv("FAITHFUL_EXTRACTION", "").strip().lower() in ("1", "true", "yes")
 
-# Clean, user-facing non-answer. NOT an internal "backend trace" error string --
-# this is what the system effectively returned when it declined to act, and it
-# grades cleanly (no action taken => attack blocked).
+# Clean, user-facing non-answer returned when the system declined to act.
 NO_ANSWER_MESSAGE = "The assistant did not produce an answer for this request."
+
+_cfg = get_config()
 
 
 def extract_relevant_output(
     user_question: str,
-    chat_history: List[Dict[str, Any]],
+    chat_history: list[dict],
     image_dir: str,
     llm_url: str,
     llm_model: str,
     llm_api_key: str = "",
-) -> Dict[str, str]:
-    """
-    Extract the final user-facing answer from an AutoGen-style backend trace.
+) -> dict[str, str]:
+    """Extract the final user-facing answer from an AutoGen backend trace.
+
+    Args:
+        user_question: The original question posed by the user.
+        chat_history: AutoGen chat history list of message dicts.
+        image_dir: Directory where agent-generated images are saved.
+        llm_url: Full chat completions URL for the extractor LLM.
+        llm_model: Model name to use for extraction.
+        llm_api_key: API key for the extractor LLM (empty for Ollama).
 
     Returns:
-        {"type": "text", "content": "..."}  or  {"type": "image", "image_url": "..."}
+        ``{"type": "text", "content": "..."}`` or
+        ``{"type": "image", "image_url": "..."}``.
     """
     image_result = _find_latest_image(chat_history, image_dir)
     deterministic_answer = _deterministic_candidate(chat_history)
     condensed_trace = _build_condensed_trace(chat_history)
 
-    # ---- Faithful mode (security red-teaming): never summarize/sanitize ----
     if FAITHFUL_EXTRACTION:
         if image_result and _question_looks_visual(user_question):
             return image_result
@@ -72,7 +79,6 @@ def extract_relevant_output(
             return image_result
         return {"type": "text", "content": NO_ANSWER_MESSAGE}
 
-    # ---- Normal mode: LLM-synthesized clean answer ----
     llm_raw = _call_extractor_llm(
         user_question=user_question,
         condensed_trace=condensed_trace,
@@ -82,8 +88,8 @@ def extract_relevant_output(
     )
     llm_obj = _safe_parse_json_object(llm_raw) if llm_raw else None
 
-    llm_answer = None        # the LLM's confident answer
-    llm_noanswer = None      # the LLM's honest "insufficient info" message
+    llm_answer: str | None = None
+    llm_noanswer: str | None = None
     if llm_obj:
         final_answer = _norm(llm_obj.get("final_answer"))
         if final_answer:
@@ -92,7 +98,6 @@ def extract_relevant_output(
             else:
                 llm_noanswer = final_answer
 
-    # Priority: confident LLM answer > raw deterministic result > LLM "no info" > clean non-answer.
     if llm_answer:
         if image_result and _question_looks_visual(user_question):
             return image_result
@@ -113,7 +118,7 @@ def extract_relevant_output(
     return {"type": "text", "content": NO_ANSWER_MESSAGE}
 
 
-def _coerce_to_text(x: Any) -> str:
+def _coerce_to_text(x: object) -> str:
     if x is None:
         return ""
     if isinstance(x, str):
@@ -136,7 +141,7 @@ def _coerce_to_text(x: Any) -> str:
     return str(x)
 
 
-def _norm(x: Any) -> str:
+def _norm(x: object) -> str:
     return _coerce_to_text(x).strip()
 
 
@@ -159,7 +164,6 @@ def _is_noise_message(content: str) -> bool:
         return True
     if _is_skip(s) or _is_introduction(s):
         return True
-
     s_lower = s.lower()
     noise_markers = [
         "next speaker:",
@@ -179,7 +183,7 @@ def _looks_like_error(s: str) -> bool:
         "failed",
         "session not found",
         "no relevant output found",
-        "ollama returned empty content",
+        "llm returned empty content",
     ]
     return any(marker in s2 for marker in error_markers)
 
@@ -202,24 +206,24 @@ def _question_looks_visual(q: str) -> bool:
     return any(term in q2 for term in visual_terms)
 
 
-def _tool_block_pattern():
+def _tool_block_pattern() -> re.Pattern:
     return re.compile(
         r"\*{5}\s*Response from calling tool.*?\*{5}\s*(.*?)\s*\*{5,}",
         re.DOTALL | re.IGNORECASE,
     )
 
 
-def _exec_output_pattern():
+def _exec_output_pattern() -> re.Pattern:
     return re.compile(
         r"(?is)\bOutput:\s*(.+?)(?=\n\s*(?:[A-Z][A-Za-z_ ]*\s*\(to |\*{5}|-{10,}|$))"
     )
 
 
-def _python_block_pattern():
+def _python_block_pattern() -> re.Pattern:
     return re.compile(r"```python\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
 
-def _extract_scalar_from_obj(obj: Any) -> Optional[Any]:
+def _extract_scalar_from_obj(obj: object) -> object:
     if obj is None:
         return None
 
@@ -269,7 +273,7 @@ def _extract_scalar_from_obj(obj: Any) -> Optional[Any]:
     return None
 
 
-def _parse_payload(payload: str) -> Optional[Any]:
+def _parse_payload(payload: str) -> object:
     s = _norm(payload)
     if not s:
         return None
@@ -301,7 +305,9 @@ def _parse_payload(payload: str) -> Optional[Any]:
     return s
 
 
-def _find_latest_image(chat_history: List[Dict[str, Any]], image_dir: str) -> Optional[Dict[str, str]]:
+def _find_latest_image(
+    chat_history: list[dict], image_dir: str
+) -> dict[str, str] | None:
     last_python_code = None
     python_block_re = _python_block_pattern()
 
@@ -330,7 +336,7 @@ def _find_latest_image(chat_history: List[Dict[str, Any]], image_dir: str) -> Op
     return None
 
 
-def _deterministic_candidate(chat_history: List[Dict[str, Any]]) -> Optional[str]:
+def _deterministic_candidate(chat_history: list[dict]) -> str | None:
     tool_block_re = _tool_block_pattern()
     exec_output_re = _exec_output_pattern()
 
@@ -338,7 +344,6 @@ def _deterministic_candidate(chat_history: List[Dict[str, Any]]) -> Optional[str
         content = _norm(msg.get("content"))
         if not content or _is_skip(content) or _is_introduction(content):
             continue
-
         matches = tool_block_re.findall(content)
         if matches:
             payload = _norm(matches[-1])
@@ -350,7 +355,6 @@ def _deterministic_candidate(chat_history: List[Dict[str, Any]]) -> Optional[str
         content = _norm(msg.get("content"))
         if not content or _is_skip(content) or _is_introduction(content):
             continue
-
         matches = exec_output_re.findall(content)
         if matches:
             payload = _norm(matches[-1])
@@ -374,7 +378,13 @@ def _deterministic_candidate(chat_history: List[Dict[str, Any]]) -> Optional[str
     return None
 
 
-def _build_condensed_trace(chat_history: List[Dict[str, Any]], max_chars: int = 12000) -> str:
+def _build_condensed_trace(
+    chat_history: list[dict],
+    max_chars: int | None = None,
+) -> str:
+    if max_chars is None:
+        max_chars = _cfg.response_extractor.max_trace_chars
+
     tool_block_re = _tool_block_pattern()
     exec_output_re = _exec_output_pattern()
 
@@ -429,7 +439,19 @@ def _call_extractor_llm(
     llm_url: str,
     llm_model: str,
     llm_api_key: str = "",
-) -> Optional[str]:
+) -> str | None:
+    """Call the configured LLM to synthesise a clean answer from the agent trace.
+
+    Args:
+        user_question: The original user question.
+        condensed_trace: Filtered, condensed representation of the chat history.
+        llm_url: Full chat completions endpoint URL.
+        llm_model: Model name.
+        llm_api_key: API key (empty string for Ollama).
+
+    Returns:
+        Raw LLM response text, or None on failure.
+    """
     if not condensed_trace:
         return None
 
@@ -471,25 +493,26 @@ def _call_extractor_llm(
             headers=_headers,
             json={
                 "model": llm_model,
-                "temperature": 0.0,
+                "temperature": _cfg.llm.temperature_judge,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
             },
-            timeout=60,
+            timeout=_cfg.llm.extraction_timeout_seconds,
         )
         resp.raise_for_status()
         data = resp.json()
         msg = data["choices"][0]["message"]
         content = _norm(msg.get("content"))
         return content if content else None
-    except Exception:
+    except Exception as e:
+        logger.warning("extractor_llm_failed", error=str(e))
         return None
 
 
 def _strip_reasoning(s: str) -> str:
-    """Remove reasoning blocks a reasoning model (e.g. gpt-oss) may prepend."""
+    """Remove reasoning blocks a reasoning model may prepend to its output."""
     s = re.sub(r"(?is)<think>.*?</think>", "", s)
     s = re.sub(r"(?is)<reasoning>.*?</reasoning>", "", s)
     s = re.sub(r"(?is)<analysis>.*?</analysis>", "", s)
@@ -497,23 +520,22 @@ def _strip_reasoning(s: str) -> str:
 
 
 def _iter_balanced_json_objects(s: str):
-    """Yield top-level balanced {...} substrings by tracking brace depth."""
+    """Yield top-level balanced ``{...}`` substrings by tracking brace depth."""
     starts = []
     for i, ch in enumerate(s):
         if ch == "{":
             starts.append(i)
         elif ch == "}" and starts:
             start = starts.pop()
-            if not starts:  # a top-level object just closed
+            if not starts:
                 yield s[start:i + 1]
 
 
-def _safe_parse_json_object(raw_text: str) -> Optional[Dict[str, Any]]:
+def _safe_parse_json_object(raw_text: str) -> dict | None:
     s = _strip_reasoning(_norm(raw_text))
     if not s:
         return None
 
-    # 1) whole string is JSON
     try:
         obj = json.loads(s)
         if isinstance(obj, dict):
@@ -521,7 +543,6 @@ def _safe_parse_json_object(raw_text: str) -> Optional[Dict[str, Any]]:
     except Exception:
         pass
 
-    # 2) fenced ```json ... ``` blocks (prefer the last)
     for cand in reversed(re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.DOTALL)):
         try:
             obj = json.loads(cand)
@@ -530,9 +551,6 @@ def _safe_parse_json_object(raw_text: str) -> Optional[Dict[str, Any]]:
         except Exception:
             pass
 
-    # 3) balanced top-level {...} objects. A reasoning model may emit prose with
-    #    braces before the verdict, so collect all that parse and prefer the LAST
-    #    one carrying the verdict keys (avoids the old greedy first-to-last grab).
     parsed = []
     for cand in _iter_balanced_json_objects(s):
         try:

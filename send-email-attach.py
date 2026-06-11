@@ -11,13 +11,21 @@ Extra env var:
 import os
 import smtplib
 import ssl
+from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email import encoders
+from pathlib import Path
+
+import structlog
 from dotenv import load_dotenv
- 
+
+from config import configure_logging
+
 load_dotenv()
+configure_logging()
+
+logger = structlog.get_logger(__name__)
  
  
 def send_email_via_smtp(
@@ -26,14 +34,18 @@ def send_email_via_smtp(
     body: str,
     attachment_path: str | None = None,
 ) -> None:
-    """
-    Send a plain-text email with an optional file attachment via SMTP.
- 
+    """Send a plain-text email with an optional file attachment via SMTP.
+
     Args:
-        recipient_email:  Destination address.
-        subject:          Email subject line.
-        body:             Plain-text body.
-        attachment_path:  Local filesystem path to attach (optional).
+        recipient_email: Destination address.
+        subject: Email subject line.
+        body: Plain-text message body.
+        attachment_path: Local filesystem path to attach (optional).
+
+    Raises:
+        ValueError: If required SMTP config env vars are missing.
+        FileNotFoundError: If attachment_path is given but does not exist.
+        RuntimeError: On SMTP authentication failure or SMTP error.
     """
  
     host = os.getenv("SMTP_HOST")
@@ -58,10 +70,10 @@ def send_email_via_smtp(
  
     # --- Attach file if provided ---
     if attachment_path:
-        if not os.path.exists(attachment_path):
+        if not Path(attachment_path).exists():
             raise FileNotFoundError(f"Attachment not found: {attachment_path}")
- 
-        filename = os.path.basename(attachment_path)
+
+        filename = Path(attachment_path).name
         with open(attachment_path, "rb") as f:
             part = MIMEBase("application", "octet-stream")
             part.set_payload(f.read())
@@ -94,8 +106,8 @@ def send_email_via_smtp(
                     server.login(user, password)
                 server.sendmail(from_addr, recipient_email, raw)
  
-        attachment_note = f" with attachment '{os.path.basename(attachment_path)}'" if attachment_path else ""
-        print(f"✅ Email sent successfully to {recipient_email}{attachment_note}")
+        attachment_name = Path(attachment_path).name if attachment_path else None
+        logger.info("email_sent", recipient=recipient_email, attachment=attachment_name)
  
     except smtplib.SMTPAuthenticationError as e:
         raise RuntimeError(
@@ -120,4 +132,3 @@ if __name__ == "__main__":
         ),
         attachment_path=os.getenv("ATTACHMENT_PATH"),
     )
-)

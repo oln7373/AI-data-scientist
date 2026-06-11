@@ -37,13 +37,30 @@ import os
 import smtplib
 import ssl
 from email.mime.text import MIMEText
+
+import structlog
 from dotenv import load_dotenv
- 
+
+from config import configure_logging
+
 load_dotenv()
- 
- 
+configure_logging()
+
+logger = structlog.get_logger(__name__)
+
+
 def send_email_via_smtp(recipient_email: str, subject: str, body: str) -> None:
-    """Send a plain-text email using SMTP credentials from the environment."""
+    """Send a plain-text email using SMTP credentials from the environment.
+
+    Args:
+        recipient_email: Destination address.
+        subject: Email subject line.
+        body: Plain-text message body.
+
+    Raises:
+        ValueError: If required SMTP config env vars are missing.
+        RuntimeError: On SMTP authentication failure or SMTP error.
+    """
  
     host = os.getenv("SMTP_HOST")
     port = int(os.getenv("SMTP_PORT", "587"))
@@ -85,7 +102,7 @@ def send_email_via_smtp(recipient_email: str, subject: str, body: str) -> None:
                     server.login(user, password)
                 server.sendmail(from_addr, recipient_email, msg.as_string())
  
-        print(f"Email sent successfully to {recipient_email}")
+        logger.info("email_sent", recipient=recipient_email)
  
     except smtplib.SMTPAuthenticationError as e:
         raise RuntimeError(
