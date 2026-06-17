@@ -53,6 +53,7 @@ class DataConfig(BaseModel):
     dataset_url: str
     dataset_filename: str
     image_dir: str
+    select_data_sample_size: int
 
 
 class RedteamConfig(BaseModel):

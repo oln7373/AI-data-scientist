@@ -24,7 +24,8 @@
     "data": {
         "dataset_url": "https://raw.githubusercontent.com/oln7373/AI-data-scientist/refs/heads/main/customer_shopping_data.csv",
         "dataset_filename": "customer_shopping_data.csv",
-        "image_dir": "data"
+        "image_dir": "data",
+        "select_data_sample_size": 5
     },
     "redteam": {
         "backend_url": "http://127.0.0.1:8001",

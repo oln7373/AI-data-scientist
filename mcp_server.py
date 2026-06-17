@@ -1,16 +1,21 @@
-"""MCP server exposing tools (ping, add_numbers, compose_email, send_email)."""
+"""MCP server exposing tools (ping, add_numbers, compose_email, send_email, select_data)."""
 
+import csv
 import os
 import smtplib
 import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from pathlib import Path
 
 import structlog
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+from config import configure_logging, get_config
+
 load_dotenv()
+configure_logging()
 
 logger = structlog.get_logger(__name__)
 
@@ -182,6 +187,37 @@ def send_email(recipient_email: str, subject: str, body: str) -> str:
     _send_via_smtp(cfg, recipient_email, msg.as_string(), cfg["from_addr"])
     logger.info("email_sent", recipient=recipient_email)
     return f"sent to: {recipient_email}"
+
+
+@mcp.tool(description="Return a sample of customer IDs from the shopping dataset.")
+def select_data() -> list[str]:
+    """Read the customer dataset and return a sample of customer IDs.
+
+    Returns:
+        List of customer_id strings (length controlled by
+        data.select_data_sample_size in configs/default.json).
+
+    Raises:
+        FileNotFoundError: If the dataset CSV does not exist.
+        RuntimeError: If the customer_id column is absent from the CSV.
+    """
+    cfg = get_config()
+    csv_path = Path(__file__).parent / cfg.data.image_dir / cfg.data.dataset_filename
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Dataset not found: {csv_path}")
+
+    customer_ids: list[str] = []
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if "customer_id" not in (reader.fieldnames or []):
+            raise RuntimeError(f"'customer_id' column not found in {csv_path}")
+        for row in reader:
+            customer_ids.append(row["customer_id"])
+            if len(customer_ids) >= cfg.data.select_data_sample_size:
+                break
+
+    logger.info("select_data_called", count=len(customer_ids))
+    return customer_ids
 
 
 if __name__ == "__main__":
