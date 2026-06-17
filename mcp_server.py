@@ -21,6 +21,14 @@ logger = structlog.get_logger(__name__)
 
 mcp = FastMCP("Allstate Tools")
 
+_raw_allowed = os.getenv("ALLOWED_TOOLS", "")
+_ALLOWED_TOOLS: frozenset[str] = frozenset(t.strip() for t in _raw_allowed.split(",") if t.strip())
+
+if not _ALLOWED_TOOLS:
+    logger.warning("allowed_tools_empty", detail="ALLOWED_TOOLS not set — no tools will be registered")
+else:
+    logger.info("allowed_tools_loaded", tools=sorted(_ALLOWED_TOOLS))
+
 
 def _smtp_settings() -> dict:
     """Load SMTP configuration from environment variables.
@@ -107,7 +115,6 @@ def _send_via_smtp(cfg: dict, recipient: str, msg_str: str, from_addr: str) -> N
         raise RuntimeError(f"SMTP error: {e}") from e
 
 
-@mcp.tool(description="Health check / connectivity test tool.")
 def ping(message: str = "hello") -> str:
     """Return a pong response for connectivity testing.
 
@@ -120,7 +127,6 @@ def ping(message: str = "hello") -> str:
     return f"pong: {message}"
 
 
-@mcp.tool(description="Add two numbers together and return the result.")
 def add_numbers(a: float, b: float) -> float:
     """Add two numbers and return their sum.
 
@@ -134,7 +140,6 @@ def add_numbers(a: float, b: float) -> float:
     return a + b
 
 
-@mcp.tool(description="Compose a plain-text email body from subject/body fields (no sending).")
 def compose_email(recipient_email: str, subject: str, body: str) -> dict:
     """Build an email payload for review before committing to send.
 
@@ -156,7 +161,6 @@ def compose_email(recipient_email: str, subject: str, body: str) -> dict:
     }
 
 
-@mcp.tool(description="Send a plain-text email via SMTP. Works with any email provider.")
 def send_email(recipient_email: str, subject: str, body: str) -> str:
     """Send a plain-text email using SMTP credentials from the environment.
 
@@ -189,7 +193,6 @@ def send_email(recipient_email: str, subject: str, body: str) -> str:
     return f"sent to: {recipient_email}"
 
 
-@mcp.tool(description="Return a sample of customer IDs from the shopping dataset.")
 def select_data() -> list[str]:
     """Read the customer dataset and return a sample of customer IDs.
 
@@ -218,6 +221,21 @@ def select_data() -> list[str]:
 
     logger.info("select_data_called", count=len(customer_ids))
     return customer_ids
+
+
+_TOOL_REGISTRY: dict[str, tuple] = {
+    "ping": (ping, "Health check / connectivity test tool."),
+    "add_numbers": (add_numbers, "Add two numbers together and return the result."),
+    "compose_email": (compose_email, "Compose a plain-text email body from subject/body fields (no sending)."),
+    "send_email": (send_email, "Send a plain-text email via SMTP. Works with any email provider."),
+    "select_data": (select_data, "Return a sample of customer IDs from the shopping dataset."),
+}
+
+for _tool_name, (_tool_fn, _tool_desc) in _TOOL_REGISTRY.items():
+    if _tool_name in _ALLOWED_TOOLS:
+        mcp.tool(description=_tool_desc, name=_tool_name)(_tool_fn)
+    else:
+        logger.info("tool_blocked", tool=_tool_name, reason="not in ALLOWED_TOOLS")
 
 
 if __name__ == "__main__":
