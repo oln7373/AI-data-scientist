@@ -8,7 +8,7 @@ The system consists of:
 
 - A **FastAPI backend**
 - A **Streamlit frontend**
-- An **LLM backend** — any OpenAI-compatible provider: Ollama (local), OpenAI, OpenRouter (Anthropic, Google, Meta, Mistral + free models), Groq, Together AI, Azure, or any other `/v1` endpoint
+- An **LLM backend** — any OpenAI-compatible provider: Ollama (local), OpenAI, OpenRouter (Anthropic, Google, Meta, Mistral + free models), Groq, Together AI, Azure, **Amazon Bedrock**, or any other `/v1` endpoint
 - A **multi-agent AutoGen** orchestration layer
 - A separate **MCP server** for tool execution
 
@@ -48,7 +48,7 @@ Python 3.10+. All required packages are listed in `myenv.txt`.
 
 ### LLM Backend (Required — choose any provider)
 
-The system works with **any OpenAI-compatible LLM endpoint**. Set three environment variables and the same code runs everywhere — no provider-specific branches, no special flags.
+The system works with **any OpenAI-compatible LLM endpoint** and also supports **Amazon Bedrock** via a dedicated integration. For all non-Bedrock providers, set three environment variables and the same code runs everywhere.
 
 | Provider | `LLM_BASE_URL` | Notes |
 |---|---|---|
@@ -59,6 +59,7 @@ The system works with **any OpenAI-compatible LLM endpoint**. Set three environm
 | **Together AI** | `https://api.together.xyz/v1` | Wide model selection. |
 | **Mistral** | `https://api.mistral.ai/v1` | Mistral models only. |
 | **Azure OpenAI** | `https://<resource>.openai.azure.com/openai/deployments/<deployment>/` | Enterprise Azure. |
+| **Amazon Bedrock** | _(set `LLM_PROVIDER=bedrock` — see below)_ | AWS SigV4 auth via boto3. |
 
 To access **Anthropic Claude** or **Google Gemini**, use OpenRouter as the base URL and set `LLM_MODEL` to `anthropic/claude-3.5-sonnet` or `google/gemini-flash-1.5` respectively.
 
@@ -170,6 +171,29 @@ LLM_BASE_URL=https://api.groq.com/openai/v1
 LLM_API_KEY=gsk_...
 LLM_MODEL=llama-3.1-8b-instant
 ```
+
+#### Amazon Bedrock
+
+Bedrock uses AWS SigV4 request signing instead of a Bearer token, so it requires a small extra setup:
+
+1. Install the AWS SDK:
+   ```bash
+   pip install boto3 botocore
+   ```
+2. Set your AWS credentials (use any standard method — env vars, `~/.aws/credentials`, IAM role, etc.):
+   ```env
+   LLM_PROVIDER=bedrock
+   LLM_MODEL=us.amazon.nova-pro-v1:0   # or any Bedrock model ID you have access to
+   AWS_REGION=us-east-1
+   AWS_ACCESS_KEY_ID=...
+   AWS_SECRET_ACCESS_KEY=...
+   # AWS_SESSION_TOKEN=...             # only for temporary / STS credentials
+   ```
+   Leave `LLM_BASE_URL` and `LLM_API_KEY` unset — they are ignored when `LLM_PROVIDER=bedrock`.
+
+3. Ensure the IAM identity has the `bedrock:InvokeModel` permission for the chosen model.
+
+The backend automatically signs all Bedrock API calls with SigV4 (via `boto3`) so no manual auth header configuration is needed. The AutoGen agent pipeline uses the Converse API for reliable multi-turn chat; all other endpoints use Bedrock's OpenAI-compatible `/openai/v1` path.
 
 #### Other providers (Together AI, Mistral, Azure, etc.)
 
@@ -604,7 +628,9 @@ Defines required environment variables. Key variables:
 LLM_BASE_URL           # Provider /v1 endpoint (default: Ollama localhost)
 LLM_API_KEY            # API key — ignored by Ollama, required for cloud providers
 LLM_MODEL              # Model name as the provider expects it
+LLM_PROVIDER           # Set to "bedrock" for Amazon Bedrock; leave unset for all others
 OLLAMA_PORT            # Ollama port (default: 11434); used to build the default LLM_BASE_URL
+AWS_REGION             # AWS region for Bedrock (default: us-east-1)
 MCP_PORT               # Port the MCP server runs on
 ALLOWED_TOOLS          # Comma-separated list of permitted MCP tools
 BACKEND_URL            # Backend base URL used by the Streamlit frontend (default: http://127.0.0.1:8001)

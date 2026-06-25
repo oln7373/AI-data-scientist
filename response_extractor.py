@@ -8,9 +8,6 @@ Intended usage from multi_ai_agent.py::
         user_question=cleaned_question,
         chat_history=chat_result.chat_history,
         image_dir=IMAGE_DIR,
-        llm_url=LLM_URL,
-        llm_model=LLM_MODEL,
-        llm_api_key=LLM_API_KEY,
     )
 
 Red-teaming note:
@@ -27,10 +24,10 @@ import json
 import os
 import re
 
-import requests
 import structlog
 
 from config import get_config
+from llm_client import LLM_MODEL, get_sync_client
 
 logger = structlog.get_logger(__name__)
 
@@ -46,9 +43,6 @@ def extract_relevant_output(
     user_question: str,
     chat_history: list[dict],
     image_dir: str,
-    llm_url: str,
-    llm_model: str,
-    llm_api_key: str = "",
 ) -> dict[str, str]:
     """Extract the final user-facing answer from an AutoGen backend trace.
 
@@ -56,9 +50,6 @@ def extract_relevant_output(
         user_question: The original question posed by the user.
         chat_history: AutoGen chat history list of message dicts.
         image_dir: Directory where agent-generated images are saved.
-        llm_url: Full chat completions URL for the extractor LLM.
-        llm_model: Model name to use for extraction.
-        llm_api_key: API key for the extractor LLM (empty for Ollama).
 
     Returns:
         ``{"type": "text", "content": "..."}`` or
@@ -82,9 +73,6 @@ def extract_relevant_output(
     llm_raw = _call_extractor_llm(
         user_question=user_question,
         condensed_trace=condensed_trace,
-        llm_url=llm_url,
-        llm_model=llm_model,
-        llm_api_key=llm_api_key,
     )
     llm_obj = _safe_parse_json_object(llm_raw) if llm_raw else None
 
@@ -436,18 +424,12 @@ def _build_condensed_trace(
 def _call_extractor_llm(
     user_question: str,
     condensed_trace: str,
-    llm_url: str,
-    llm_model: str,
-    llm_api_key: str = "",
 ) -> str | None:
     """Call the configured LLM to synthesise a clean answer from the agent trace.
 
     Args:
         user_question: The original user question.
         condensed_trace: Filtered, condensed representation of the chat history.
-        llm_url: Full chat completions endpoint URL.
-        llm_model: Model name.
-        llm_api_key: API key (empty string for Ollama).
 
     Returns:
         Raw LLM response text, or None on failure.
@@ -483,28 +465,18 @@ def _call_extractor_llm(
         f"BACKEND TRACE:\n{condensed_trace}\n"
     )
 
-    _headers = {"Content-Type": "application/json"}
-    if llm_api_key and llm_api_key != "ollama":
-        _headers["Authorization"] = f"Bearer {llm_api_key}"
-
     try:
-        resp = requests.post(
-            llm_url,
-            headers=_headers,
-            json={
-                "model": llm_model,
-                "temperature": _cfg.llm.temperature_judge,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            },
+        client = get_sync_client()
+        completion = client.chat.completions.create(
+            model=LLM_MODEL,
+            temperature=_cfg.llm.temperature_judge,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
             timeout=_cfg.llm.extraction_timeout_seconds,
         )
-        resp.raise_for_status()
-        data = resp.json()
-        msg = data["choices"][0]["message"]
-        content = _norm(msg.get("content"))
+        content = _norm(completion.choices[0].message.content)
         return content if content else None
     except Exception as e:
         logger.warning("extractor_llm_failed", error=str(e))

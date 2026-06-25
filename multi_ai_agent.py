@@ -22,7 +22,6 @@ import re
 
 import anyio
 import autogen
-import httpx
 import requests
 import structlog
 from dotenv import load_dotenv
@@ -35,6 +34,14 @@ from email_utils import (
     compose_email_payload,
     extract_email_and_clean_prompt,
     make_absolute_image_url,
+)
+from llm_client import (
+    LLM_BASE_URL,
+    LLM_MODEL,
+    LLM_PROVIDER,
+    BedrockAutoGenClient,
+    get_async_client,
+    get_autogen_llm_config,
 )
 from response_extractor import extract_relevant_output
 
@@ -50,24 +57,6 @@ ALLOWED_TOOLS = {t.strip() for t in os.getenv("ALLOWED_TOOLS", "").split(",") if
 
 if not ALLOWED_TOOLS:
     raise RuntimeError("ALLOWED_TOOLS not configured in .env")
-
-_ollama_port = os.getenv("OLLAMA_PORT", "11434")
-LLM_BASE_URL = (
-    os.getenv("LLM_BASE_URL")
-    or f"http://localhost:{_ollama_port}/v1"
-)
-LLM_API_KEY = (
-    os.getenv("LLM_API_KEY")
-    or os.getenv("OPENAI_API_KEY")
-    or "ollama"
-)
-LLM_MODEL = (
-    os.getenv("LLM_MODEL")
-    or os.getenv("OPENAI_MODEL")
-    or os.getenv("OLLAMA_MODEL")
-    or "llama3.2"
-)
-LLM_URL = f"{LLM_BASE_URL}/chat/completions"
 
 DATA_URL = _cfg.data.dataset_url
 IMAGE_DIR = _cfg.data.image_dir
@@ -154,43 +143,28 @@ async def mcp_agent_add(request: QueryRequest, http_req: Request) -> dict:
         "Use tool calling when possible.\n"
     )
 
-    _headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LLM_API_KEY}"}
-
-    async with httpx.AsyncClient(trust_env=False, timeout=_cfg.llm.extraction_timeout_seconds) as client:
-        resp = await client.post(
-            LLM_URL,
-            headers=_headers,
-            json={
-                "model": LLM_MODEL,
-                "temperature": _cfg.llm.temperature_agent,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": request.question},
-                ],
-            },
-        )
-
-    if resp.status_code != 200:
-        raise HTTPException(
-            status_code=502,
-            detail=f"LLM error {resp.status_code}: {resp.text[:1000]}",
-        )
-
-    data = resp.json()
-
+    async_client = get_async_client()
     try:
-        msg = data["choices"][0]["message"]
+        completion = await async_client.chat.completions.create(
+            model=LLM_MODEL,
+            temperature=_cfg.llm.temperature_agent,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": request.question},
+            ],
+            timeout=_cfg.llm.extraction_timeout_seconds,
+        )
     except Exception as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Unexpected LLM response shape: {e}. Raw={str(data)[:1000]}",
-        ) from e
+        raise HTTPException(status_code=502, detail=f"LLM request failed: {e}") from e
 
-    tool_calls = msg.get("tool_calls") or []
+    msg = completion.choices[0].message
+    tool_calls = msg.tool_calls or []
+
     if tool_calls:
         try:
-            fn = tool_calls[0]["function"]["name"]
-            arg_str = tool_calls[0]["function"].get("arguments", "{}")
+            tc = tool_calls[0]
+            fn = tc.function.name
+            arg_str = tc.function.arguments
             args = json.loads(arg_str) if isinstance(arg_str, str) else (arg_str or {})
         except Exception as e:
             raise HTTPException(
@@ -206,17 +180,17 @@ async def mcp_agent_add(request: QueryRequest, http_req: Request) -> dict:
 
         return {
             "llm_used": {"base_url": LLM_BASE_URL, "model": LLM_MODEL},
-            "llm_finish_reason": data["choices"][0].get("finish_reason"),
+            "llm_finish_reason": completion.choices[0].finish_reason,
             "llm_tool_call": {"tool": fn, "args": args},
             "mcp_response": tool_resp,
             "allowed_tools": sorted(ALLOWED_TOOLS),
         }
 
-    content = (msg.get("content") or "").strip()
+    content = (msg.content or "").strip()
     if not content:
         raise HTTPException(
             status_code=502,
-            detail=f"LLM returned neither tool_calls nor content. Raw response: {str(data)[:1000]}",
+            detail="LLM returned neither tool_calls nor content.",
         )
 
     try:
@@ -296,17 +270,10 @@ _COMMON_INSTRUCT = (
     "If the user requests email delivery, note that the backend will send it automatically."
 )
 
-_config_list = {
-    "config_list": [
-        {
-            "model": LLM_MODEL,
-            "base_url": LLM_BASE_URL,
-            "api_key": LLM_API_KEY,
-            "temperature": _cfg.llm.temperature_agent,
-            "price": [0, 0],
-        }
-    ]
-}
+if LLM_PROVIDER == "bedrock":
+    autogen.AssistantAgent.register_model_client(model_client_cls=BedrockAutoGenClient)
+
+_config_list = get_autogen_llm_config()
 
 user_proxy = autogen.UserProxyAgent(
     name="Admin",
@@ -621,9 +588,6 @@ async def multi_ai_agent_query(request: QueryRequest, http_req: Request) -> dict
         user_question=cleaned_question,
         chat_history=chat_result.chat_history,
         image_dir=IMAGE_DIR,
-        llm_url=LLM_URL,
-        llm_model=LLM_MODEL,
-        llm_api_key=LLM_API_KEY,
     )
 
     logger.info("multi_agent_complete", result_type=result.get("type"))

@@ -35,6 +35,8 @@ beautifulsoup4=4.13.3=pypi_0
 bert-score=0.3.13=pypi_0
 bleach=6.2.0=pypi_0
 blinker=1.9.0=pypi_0
+boto3=1.43.36=pypi_0
+botocore=1.43.36=pypi_0
 brotli=1.0.9=pypi_0
 build=1.2.2.post1=pypi_0
 bzip2=1.0.8=h5eee18b_6
@@ -119,6 +121,7 @@ jedi=0.19.2=pypi_0
 jeepney=0.9.0=pypi_0
 jinja2=3.1.6=pypi_0
 jiter=0.13.0=pypi_0
+jmespath=1.1.0=pypi_0
 joblib=1.4.2=pypi_0
 json5=0.10.0=pypi_0
 jsonpatch=1.33=pypi_0
@@ -321,6 +324,7 @@ rouge-score=0.1.2=pypi_0
 rpds-py=0.23.1=pypi_0
 rsa=4.9=pypi_0
 ruff=0.9.10=pypi_0
+s3transfer=0.19.0=pypi_0
 sacrebleu=2.5.1=pypi_0
 safetensors=0.5.3=pypi_0
 scikit-learn=1.6.1=pypi_0
@@ -345,6 +349,7 @@ stack-data=0.6.3=pypi_0
 starlette=0.52.1=pypi_0
 streamlit=1.42.1=pypi_0
 striprtf=0.0.26=pypi_0
+structlog=26.1.0=pypi_0
 sympy=1.13.1=pypi_0
 tabulate=0.9.0=pypi_0
 tenacity=8.5.0=pypi_0

@@ -17,6 +17,7 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from config import get_config
+from llm_client import LLM_MODEL, get_sync_client
 
 load_dotenv()
 
@@ -24,26 +25,8 @@ logger = structlog.get_logger(__name__)
 
 _cfg = get_config()
 
-from openai import OpenAI as _OpenAIClient
-
-_ollama_port = os.getenv("OLLAMA_PORT", "11434")
-_openai_client = _OpenAIClient(
-    api_key=(
-        os.getenv("LLM_API_KEY")
-        or os.getenv("OPENAI_API_KEY")
-        or "ollama"
-    ),
-    base_url=(
-        os.getenv("LLM_BASE_URL")
-        or f"http://localhost:{_ollama_port}/v1"
-    ),
-)
-_openai_model = (
-    os.getenv("LLM_MODEL")
-    or os.getenv("OPENAI_MODEL")
-    or os.getenv("OLLAMA_MODEL")
-    or "llama3.2"
-)
+_openai_client = get_sync_client()
+_openai_model = LLM_MODEL
 
 summarizer_router = APIRouter()
 
