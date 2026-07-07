@@ -65,6 +65,42 @@ SERVER_CSV_PATH = os.path.join(IMAGE_DIR, AGENT_CSV)
 
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
+# Canonical descriptions for every MCP tool the system knows about.
+# Only those present in ALLOWED_TOOLS are registered with AutoGen agents.
+_MCP_TOOL_CATALOG: dict[str, str] = {
+    "add_numbers": (
+        "add_numbers(a, b) — Add two numbers together and return their sum. "
+        "Use whenever the user asks to add, sum, or compute arithmetic."
+    ),
+    "ping": (
+        "ping(message='hello') — Send a health-check ping to the MCP server. "
+        "Returns 'pong: <message>'. Use for connectivity tests or when the user asks to ping."
+    ),
+    "select_data": (
+        "select_data() — Return a sample list of customer IDs from the shopping dataset via MCP. "
+        "Use when the user asks to select, fetch, or retrieve customer IDs or sample data."
+    ),
+    "compose_email": (
+        "compose_email(recipient_email, subject, body) — Compose an email draft without sending it. "
+        "Use to prepare the email content before calling send_email."
+    ),
+    "send_email": (
+        "send_email(recipient_email, subject, body) — Send a plain-text email via MCP. "
+        "Use when the user requests email delivery."
+    ),
+}
+
+_available_tools_lines = "\n".join(
+    f"- {desc}"
+    for name, desc in _MCP_TOOL_CATALOG.items()
+    if name in ALLOWED_TOOLS
+)
+_available_tools_text = (
+    _available_tools_lines
+    if _available_tools_lines
+    else "- (No MCP tools are currently enabled in ALLOWED_TOOLS)"
+)
+
 
 class QueryRequest(BaseModel):
     """Request body for all agent query endpoints."""
@@ -286,30 +322,36 @@ coder = autogen.AssistantAgent(
     name="DataScientist",
     llm_config=_config_list,
     system_message=f"""
+ROLE:
+You are a senior data scientist and the primary MCP tool-caller in this group.
+
 TOOLS-FIRST POLICY (CRITICAL):
-- Prefer MCP tool calls over writing Python whenever a suitable tool exists.
-- Only if NO appropriate MCP tool exists should you write Python code for the Executor to run.
-- NEVER write Python code that calls MCP tools (e.g., add_numbers(...)); tools are NOT defined in the Executor Python environment.
+- You MUST call an MCP tool via function/tool calling whenever a suitable tool exists for the request.
+- Do NOT write Python code to do what an MCP tool can already do.
+- Do NOT call MCP tools from Python code — they are not importable; use the tool-calling interface directly.
+- Only write Python code when NO appropriate MCP tool exists (e.g., data analysis, visualisation, statistics).
 - If you are not needed for this request, respond with exactly: SKIP
 
-ROLE:
-You are a senior data scientist expert in writing clean Python code for data analytics.
+AVAILABLE MCP TOOLS (call these via tool/function calling, not Python):
+{_available_tools_text}
 
-TOOL USAGE:
-- add_numbers(a, b) is an MCP tool available for addition.
-- If the user asks to add numbers (e.g., "3 + 5"), call add_numbers(a, b) via tool/function calling.
-- Do NOT write Python for simple arithmetic.
+WHEN TO CALL TOOLS vs WRITE CODE:
+- Arithmetic / addition → call add_numbers
+- Connectivity / health check / ping → call ping
+- Retrieve customer IDs / sample data → call select_data
+- Compose an email draft → call compose_email
+- Send an email → call send_email
+- Data analysis, statistics, charts on the dataset → write Python code
 
-CODE RULES:
-- Output ONLY Python code when code is required.
-- Do not include explanations or prose.
+CODE RULES (only when writing Python):
+- Output ONLY Python code, no explanations or prose.
 - Do not produce unnecessary code.
 
 DATASET RULES:
-Use the code from FileReader and Summarizer to answer the question being asked.
+Use code from FileReader and Summarizer to answer the question being asked.
 Ensure correctness of any reused code from the group chat.
 
-The schema for dataset is:
+The schema for the dataset is:
 {_DATA_SCHEMA}
 
 {_COMMON_INSTRUCT}
@@ -324,11 +366,7 @@ ROLE:
 You are responsible ONLY for loading the dataset and verifying it can be read.
 
 IMPORTANT:
-If the user request is NOT about the dataset, respond with exactly: SKIP
-
-TOOLS-FIRST POLICY:
-- Do NOT call MCP tools.
-- Your responsibility is dataset loading only.
+If the user request is NOT about reading or loading the dataset, respond with exactly: SKIP
 
 TASK:
 Write Python code that:
@@ -357,11 +395,7 @@ ROLE:
 You summarize the dataset.
 
 IMPORTANT:
-If the user request is NOT asking for dataset summary or statistics, respond with exactly: SKIP
-
-TOOLS-FIRST POLICY:
-- Do NOT call MCP tools.
-- Only write Python if summarization is requested.
+If the user request is NOT asking for a dataset summary or statistics, respond with exactly: SKIP
 
 TASK:
 Using the code from FileReader, produce Python code that summarizes the dataset
@@ -386,10 +420,7 @@ ROLE:
 You create visualizations for dataset analysis.
 
 IMPORTANT:
-If the user request does NOT require visualization, respond with exactly: SKIP
-
-TOOLS-FIRST POLICY:
-- Do NOT call MCP tools.
+If the user request does NOT require a chart or visualization, respond with exactly: SKIP
 
 TASK:
 Write Python code to produce visualizations when appropriate.
@@ -421,28 +452,29 @@ groupchat = autogen.GroupChat(
     agents=[user_proxy, filereader, summarizer_agent, coder, viz, executor],
     messages=[],
     max_round=8,
-    speaker_selection_method="round_robin",
+    speaker_selection_method="auto",
     enable_clear_history=True,
     send_introductions=True,
 )
 
 manager = autogen.GroupChatManager(
     system_message=(
-        "You are a chat manager responsible for orchestrating the agents.\n\n"
-        "GLOBAL POLICY (CRITICAL): TOOLS-FIRST, CODE-SECOND.\n"
-        "- If an appropriate MCP tool exists for the request, instruct the responsible agent to call that tool.\n"
-        "- Only if NO appropriate tool exists should agents write Python for the Executor.\n"
-        "- NEVER allow Python code that calls MCP tools (e.g., add_numbers(...)).\n\n"
-        "ARITHMETIC RULE:\n"
-        "- For simple arithmetic tasks like '3 + 5', route directly to DataScientist to call add_numbers.\n"
-        "- Do NOT involve dataset agents for arithmetic tasks.\n\n"
-        "AGENT SELECTION:\n"
-        "- File reading → FileReader\n"
-        "- Dataset summary → Summarizer\n"
-        "- Data analysis or computation → DataScientist\n"
-        "- Visualization → Visualization\n\n"
-        "If an agent is not relevant to the task, it must respond with exactly: SKIP.\n"
-        "If Python code is produced, send it to Executor to run."
+        "You are a chat manager responsible for selecting the next speaker.\n\n"
+        "ROUTING RULES — follow in order:\n"
+        f"1. MCP TOOL TASKS: Any request that matches an available MCP tool must go to DataScientist.\n"
+        f"   Available tools: {', '.join(t for t in _MCP_TOOL_CATALOG if t in ALLOWED_TOOLS)}.\n"
+        "   Examples: add numbers → DataScientist, ping / health check → DataScientist, "
+        "   retrieve customer IDs → DataScientist, compose or send email → DataScientist.\n"
+        "2. DATASET LOADING: Reading / loading the CSV file → FileReader.\n"
+        "3. DATASET SUMMARY: Summarising dataset statistics → Summarizer.\n"
+        "4. CHARTS / VISUALISATIONS: Any plot or graph → Visualization.\n"
+        "5. DATA ANALYSIS / COMPUTATION: Complex analytics requiring Python → DataScientist.\n"
+        "6. CODE EXECUTION: After any agent produces Python code → Executor.\n\n"
+        "KEY RULES:\n"
+        "- Route MCP tool requests to DataScientist FIRST and IMMEDIATELY — do not involve other agents.\n"
+        "- DataScientist calls tools via the tool-calling interface, NOT by writing Python.\n"
+        "- Agents that are irrelevant to the current step respond with exactly: SKIP.\n"
+        "- After Executor runs code successfully or prints TERMINATE, end the conversation."
     ),
     is_termination_msg=lambda msg: (
         isinstance(msg, dict)
@@ -546,25 +578,65 @@ async def multi_ai_agent_query(request: QueryRequest, http_req: Request) -> dict
     email, cleaned_question = extract_email_and_clean_prompt(request.question)
     cleaned_question = re.sub(r"https?://\S+", AGENT_CSV, cleaned_question)
 
-    async def _mcp_add_numbers(a: float, b: float) -> object:
-        resp = await mcp_http.tool_call("add_numbers", {"a": a, "b": b})
+    async def _mcp_invoke(tool_name: str, args: dict) -> object:
+        """Route a tool call through the already-connected MCP client."""
+        resp = await mcp_http.tool_call(tool_name, args)
         try:
-            return resp["result"]["structuredContent"]["result"]
+            sc = resp["result"]["structuredContent"]
+            for key in ("result", "output", "answer"):
+                if key in sc:
+                    return sc[key]
+            return sc
         except Exception:
             return resp
 
+    # Define a strongly-typed sync bridge for every known MCP tool.
+    # Sync wrappers are required because AutoGen worker threads call tools
+    # synchronously; anyio.from_thread.run bounces back to the event loop.
+
     def add_numbers(a: float, b: float) -> object:
-        return anyio.from_thread.run(_mcp_add_numbers, a, b)
+        """Add two numbers via MCP and return their sum."""
+        return anyio.from_thread.run(_mcp_invoke, "add_numbers", {"a": a, "b": b})
+
+    def ping(message: str = "hello") -> object:
+        """Ping the MCP server for a health or connectivity check."""
+        return anyio.from_thread.run(_mcp_invoke, "ping", {"message": message})
+
+    def select_data() -> object:
+        """Retrieve a sample list of customer IDs from the shopping dataset via MCP."""
+        return anyio.from_thread.run(_mcp_invoke, "select_data", {})
+
+    def compose_email(recipient_email: str, subject: str, body: str) -> object:
+        """Compose an email draft (does not send it)."""
+        return anyio.from_thread.run(
+            _mcp_invoke,
+            "compose_email",
+            {"recipient_email": recipient_email, "subject": subject, "body": body},
+        )
+
+    def send_email_tool(recipient_email: str, subject: str, body: str) -> object:
+        """Send a plain-text email via MCP."""
+        return anyio.from_thread.run(
+            _mcp_invoke,
+            "send_email",
+            {"recipient_email": recipient_email, "subject": subject, "body": body},
+        )
+
+    _tool_fn_map: dict[str, tuple] = {
+        "add_numbers": (add_numbers, _MCP_TOOL_CATALOG["add_numbers"]),
+        "ping": (ping, _MCP_TOOL_CATALOG["ping"]),
+        "select_data": (select_data, _MCP_TOOL_CATALOG["select_data"]),
+        "compose_email": (compose_email, _MCP_TOOL_CATALOG["compose_email"]),
+        "send_email": (send_email_tool, _MCP_TOOL_CATALOG["send_email"]),
+    }
 
     try:
-        _register_autogen_execution(user_proxy, add_numbers)
-        for agent in [filereader, summarizer_agent, coder, viz]:
-            _register_autogen_tool(
-                agent,
-                add_numbers,
-                name="add_numbers",
-                description="Add two numbers a and b using the MCP add_numbers tool. Returns the sum.",
-            )
+        for tool_name, (tool_fn, tool_desc) in _tool_fn_map.items():
+            if tool_name not in ALLOWED_TOOLS:
+                continue
+            _register_autogen_execution(user_proxy, tool_fn)
+            _register_autogen_tool(coder, tool_fn, name=tool_name, description=tool_desc)
+            logger.info("autogen_tool_registered", tool=tool_name)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to register AutoGen tools: {e}") from e
 
