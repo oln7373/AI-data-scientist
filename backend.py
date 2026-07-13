@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 from config import configure_logging, get_config
 from mcp_http_client import MCPHttpClient
 from multi_ai_agent import router as multi_ai_agent_router
+from redteam_harness import router as redteam_router
 
 # from summarizer import summarizer_router
 # from rag import rag_router
@@ -71,6 +72,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(root_path="/api", lifespan=lifespan)
 
 app.include_router(multi_ai_agent_router)
+app.include_router(redteam_router)
 # app.include_router(summarizer_router)
 # app.include_router(rag_router)
 

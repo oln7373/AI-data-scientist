@@ -1,12 +1,14 @@
-"""MCP server exposing tools (ping, add_numbers, compose_email, send_email, select_data)."""
+"""MCP server exposing customer shopping data analysis tools."""
 
 import csv
 import os
-import smtplib
-import ssl
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+import random
+from collections import Counter, defaultdict
 from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")  # non-interactive backend — safe for server use
+import matplotlib.pyplot as plt
 
 import structlog
 from dotenv import load_dotenv
@@ -19,7 +21,7 @@ configure_logging()
 
 logger = structlog.get_logger(__name__)
 
-mcp = FastMCP("Allstate Tools")
+mcp = FastMCP("Insight Hub Tools")
 
 _raw_allowed = os.getenv("ALLOWED_TOOLS", "")
 _ALLOWED_TOOLS: frozenset[str] = frozenset(t.strip() for t in _raw_allowed.split(",") if t.strip())
@@ -30,91 +32,29 @@ else:
     logger.info("allowed_tools_loaded", tools=sorted(_ALLOWED_TOOLS))
 
 
-def _smtp_settings() -> dict:
-    """Load SMTP configuration from environment variables.
-
-    Required env vars:
-        SMTP_HOST: e.g. smtp.gmail.com | smtp.office365.com
-        SMTP_USER: sender login / address
-        SMTP_PASSWORD: password or app-password
-
-    Optional env vars:
-        SMTP_PORT: 587 (default STARTTLS) | 465 (SSL) | 25
-        SMTP_FROM: display From address (defaults to SMTP_USER)
-        SMTP_TLS: starttls (default) | ssl | none
+# ---------------------------------------------------------------------------
+# Shared CSV loader
+# ---------------------------------------------------------------------------
+def _load_csv() -> list[dict]:
+    """Read all rows from the customer shopping dataset.
 
     Returns:
-        Dict with keys host, port, user, password, from_addr, tls_mode.
+        List of row dicts for every record in the CSV.
 
     Raises:
-        RuntimeError: If any required env var is missing.
+        FileNotFoundError: If the dataset CSV does not exist.
     """
-    host = os.getenv("SMTP_HOST")
-    port = int(os.getenv("SMTP_PORT", "587"))
-    user = os.getenv("SMTP_USER")
-    password = os.getenv("SMTP_PASSWORD")
-    from_addr = os.getenv("SMTP_FROM", user)
-    tls_mode = os.getenv("SMTP_TLS", "starttls").lower()
-
-    if not host or not user or not password:
-        raise RuntimeError(
-            "Missing SMTP config. Set SMTP_HOST, SMTP_USER, and SMTP_PASSWORD "
-            "in your environment or .env file."
-        )
-
-    return {
-        "host": host,
-        "port": port,
-        "user": user,
-        "password": password,
-        "from_addr": from_addr,
-        "tls_mode": tls_mode,
-    }
+    cfg = get_config()
+    csv_path = Path(__file__).parent / cfg.data.image_dir / cfg.data.dataset_filename
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Dataset not found: {csv_path}")
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
 
 
-def _send_via_smtp(cfg: dict, recipient: str, msg_str: str, from_addr: str) -> None:
-    """Dispatch an email over SMTP, handling STARTTLS, SSL, and plain modes.
-
-    Args:
-        cfg: SMTP settings dict returned by _smtp_settings().
-        recipient: Destination email address.
-        msg_str: Fully-encoded MIME message string.
-        from_addr: Sender address for the SMTP envelope.
-
-    Raises:
-        RuntimeError: On authentication failure or any SMTP error.
-    """
-    context = ssl.create_default_context()
-
-    try:
-        if cfg["tls_mode"] == "ssl":
-            with smtplib.SMTP_SSL(cfg["host"], cfg["port"], context=context) as server:
-                server.login(cfg["user"], cfg["password"])
-                server.sendmail(from_addr, recipient, msg_str)
-
-        elif cfg["tls_mode"] == "starttls":
-            with smtplib.SMTP(cfg["host"], cfg["port"]) as server:
-                server.ehlo()
-                server.starttls(context=context)
-                server.ehlo()
-                server.login(cfg["user"], cfg["password"])
-                server.sendmail(from_addr, recipient, msg_str)
-
-        else:
-            with smtplib.SMTP(cfg["host"], cfg["port"]) as server:
-                if cfg["user"] and cfg["password"]:
-                    server.login(cfg["user"], cfg["password"])
-                server.sendmail(from_addr, recipient, msg_str)
-
-    except smtplib.SMTPAuthenticationError as e:
-        raise RuntimeError(
-            f"SMTP authentication failed for {cfg['user']}. "
-            "Check credentials. Gmail users: use an App Password."
-        ) from e
-    except smtplib.SMTPException as e:
-        raise RuntimeError(f"SMTP error: {e}") from e
-
-
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
 def ping(message: str = "hello") -> str:
     """Return a pong response for connectivity testing.
 
@@ -140,95 +80,191 @@ def add_numbers(a: float, b: float) -> float:
     return a + b
 
 
-def compose_email(recipient_email: str, subject: str, body: str) -> dict:
-    """Build an email payload for review before committing to send.
-
-    Keeping compose and send as separate tools lets the agent (or a human)
-    inspect the draft before any side-effects occur.
+def read_dataset(limit: int = 20) -> list[dict]:
+    """Read rows from the customer shopping dataset and return them for analysis.
 
     Args:
-        recipient_email: Destination address.
-        subject: Email subject line.
-        body: Plain-text body content.
+        limit: Maximum number of rows to return (capped at 50).
 
     Returns:
-        Dict with keys to, subject, body.
-    """
-    return {
-        "to": recipient_email,
-        "subject": subject,
-        "body": body,
-    }
-
-
-def send_email(recipient_email: str, subject: str, body: str) -> str:
-    """Send a plain-text email using SMTP credentials from the environment.
-
-    Provider quick-start:
-        Gmail        → SMTP_HOST=smtp.gmail.com          SMTP_PORT=587  SMTP_TLS=starttls
-        Outlook/O365 → SMTP_HOST=smtp.office365.com      SMTP_PORT=587  SMTP_TLS=starttls
-        Yahoo        → SMTP_HOST=smtp.mail.yahoo.com     SMTP_PORT=587  SMTP_TLS=starttls
-        Corporate    → SMTP_HOST=mail.company.com        SMTP_PORT=25   SMTP_TLS=none
-
-    Args:
-        recipient_email: Destination address.
-        subject: Email subject line.
-        body: Plain-text body content.
-
-    Returns:
-        Confirmation string on success.
-
-    Raises:
-        RuntimeError: On SMTP or authentication failure.
-    """
-    cfg = _smtp_settings()
-
-    msg = MIMEText(body, "plain")
-    msg["To"] = recipient_email
-    msg["From"] = cfg["from_addr"]
-    msg["Subject"] = subject
-
-    _send_via_smtp(cfg, recipient_email, msg.as_string(), cfg["from_addr"])
-    logger.info("email_sent", recipient=recipient_email)
-    return f"sent to: {recipient_email}"
-
-
-def select_data() -> list[str]:
-    """Read the customer dataset and return a sample of customer IDs.
-
-    Returns:
-        List of customer_id strings (length controlled by
-        data.select_data_sample_size in configs/default.json).
+        List of row dicts containing all available fields for each record.
 
     Raises:
         FileNotFoundError: If the dataset CSV does not exist.
-        RuntimeError: If the customer_id column is absent from the CSV.
     """
-    cfg = get_config()
-    csv_path = Path(__file__).parent / cfg.data.image_dir / cfg.data.dataset_filename
-    if not csv_path.exists():
-        raise FileNotFoundError(f"Dataset not found: {csv_path}")
-
-    customer_ids: list[str] = []
-    with open(csv_path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        if "customer_id" not in (reader.fieldnames or []):
-            raise RuntimeError(f"'customer_id' column not found in {csv_path}")
-        for row in reader:
-            customer_ids.append(row["customer_id"])
-            if len(customer_ids) >= cfg.data.select_data_sample_size:
-                break
-
-    logger.info("select_data_called", count=len(customer_ids))
-    return customer_ids
+    rows = _load_csv()
+    cap = min(int(limit), 50)
+    result = rows[:cap]
+    logger.info("read_dataset_called", count=len(result))
+    return result
 
 
+def most_common_payment_method() -> dict:
+    """Return the most commonly used payment method across all transactions.
+
+    Returns:
+        Dict with keys payment_method (str), count (int), and
+        all_counts (dict mapping each method to its transaction count).
+    """
+    rows = _load_csv()
+    counts = Counter(row["payment_method"] for row in rows if row.get("payment_method"))
+    top_method, top_count = counts.most_common(1)[0]
+    logger.info("most_common_payment_method_called", result=top_method)
+    return {
+        "payment_method": top_method,
+        "count": top_count,
+        "all_counts": dict(counts.most_common()),
+    }
+
+
+def most_popular_shopping_mall() -> dict:
+    """Return the shopping mall with the highest number of transactions.
+
+    Returns:
+        Dict with keys shopping_mall (str), count (int), and
+        all_counts (dict mapping each mall to its transaction count).
+    """
+    rows = _load_csv()
+    counts = Counter(row["shopping_mall"] for row in rows if row.get("shopping_mall"))
+    top_mall, top_count = counts.most_common(1)[0]
+    logger.info("most_popular_shopping_mall_called", result=top_mall)
+    return {
+        "shopping_mall": top_mall,
+        "count": top_count,
+        "all_counts": dict(counts.most_common()),
+    }
+
+
+def purchases_by_gender() -> dict:
+    """Return the total number of purchases broken down by gender.
+
+    Returns:
+        Dict with keys counts (dict mapping gender to purchase count),
+        total (int), and leading_gender (str).
+    """
+    rows = _load_csv()
+    counts = Counter(row["gender"] for row in rows if row.get("gender"))
+    leading, _ = counts.most_common(1)[0]
+    logger.info("purchases_by_gender_called", counts=dict(counts))
+    return {
+        "counts": dict(counts.most_common()),
+        "total": sum(counts.values()),
+        "leading_gender": leading,
+    }
+
+
+def plot_payment_pie() -> dict:
+    """Generate a pie chart showing the proportion of purchases for each payment method.
+
+    Saves the chart to the output/ directory and returns its path.
+
+    Returns:
+        Dict with keys chart_path (str) and data (dict of payment method → count).
+    """
+    rows = _load_csv()
+    counts = Counter(row["payment_method"] for row in rows if row.get("payment_method"))
+    fig, ax = plt.subplots()
+    ax.pie(counts.values(), labels=counts.keys(), autopct="%1.1f%%", startangle=90)
+    ax.set_title("Purchases by Payment Method")
+    out_dir = Path(__file__).parent / "output"
+    out_dir.mkdir(exist_ok=True)
+    path = out_dir / "payment_pie.png"
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("plot_payment_pie_called", path=str(path))
+    return {"chart_path": str(path), "data": dict(counts.most_common())}
+
+
+def get_random_customer_ids(n: int = 5) -> list[str]:
+    """Return n randomly sampled customer IDs from the dataset.
+
+    WARNING: This tool returns raw customer PII (personally identifiable
+    customer identifiers). It is intended for testing purposes only.
+
+    Args:
+        n: Number of customer IDs to return (capped at 10).
+
+    Returns:
+        List of randomly selected customer_id strings.
+    """
+    rows = _load_csv()
+    ids = [row["customer_id"] for row in rows if row.get("customer_id")]
+    sample = random.sample(ids, min(int(n), 10, len(ids)))
+    logger.info("get_random_customer_ids_called", count=len(sample))
+    return sample
+
+
+def plot_age_distribution() -> dict:
+    """Generate a histogram showing the distribution of customer ages.
+
+    Saves the chart to the output/ directory and returns its path.
+
+    Returns:
+        Dict with keys chart_path (str), mean_age (float), and
+        age_range (dict with min and max).
+    """
+    rows = _load_csv()
+    ages = [int(row["age"]) for row in rows if row.get("age") and str(row["age"]).isdigit()]
+    fig, ax = plt.subplots()
+    ax.hist(ages, bins=20, edgecolor="black")
+    ax.set_xlabel("Age")
+    ax.set_ylabel("Number of Transactions")
+    ax.set_title("Distribution of Customer Ages")
+    out_dir = Path(__file__).parent / "output"
+    out_dir.mkdir(exist_ok=True)
+    path = out_dir / "age_distribution.png"
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    mean_age = round(sum(ages) / len(ages), 1) if ages else 0.0
+    logger.info("plot_age_distribution_called", path=str(path))
+    return {
+        "chart_path": str(path),
+        "mean_age": mean_age,
+        "age_range": {"min": min(ages), "max": max(ages)} if ages else {},
+    }
+
+
+def average_spending_by_category() -> dict:
+    """Return the average transaction value grouped by product category.
+
+    Returns:
+        Dict with keys categories (dict mapping category → average spend,
+        sorted descending) and overall_average (float).
+    """
+    rows = _load_csv()
+    totals: dict[str, list[float]] = defaultdict(list)
+    for row in rows:
+        cat = row.get("category", "").strip()
+        price_str = row.get("price", "").strip()
+        if cat and price_str:
+            try:
+                totals[cat].append(float(price_str))
+            except ValueError:
+                pass
+    averages = {cat: round(sum(vals) / len(vals), 2) for cat, vals in totals.items()}
+    all_values = [v for vals in totals.values() for v in vals]
+    overall = round(sum(all_values) / len(all_values), 2) if all_values else 0.0
+    logger.info("average_spending_by_category_called", categories=len(averages))
+    return {
+        "categories": dict(sorted(averages.items(), key=lambda x: -x[1])),
+        "overall_average": overall,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tool registry
+# ---------------------------------------------------------------------------
 _TOOL_REGISTRY: dict[str, tuple] = {
     "ping": (ping, "Health check / connectivity test tool."),
     "add_numbers": (add_numbers, "Add two numbers together and return the result."),
-    "compose_email": (compose_email, "Compose a plain-text email body from subject/body fields (no sending)."),
-    "send_email": (send_email, "Send a plain-text email via SMTP. Works with any email provider."),
-    "select_data": (select_data, "Return a sample of customer IDs from the shopping dataset."),
+    "read_dataset": (read_dataset, "Read rows from the customer shopping dataset for analysis."),
+    "most_common_payment_method": (most_common_payment_method, "Return the most commonly used payment method across all transactions."),
+    "most_popular_shopping_mall": (most_popular_shopping_mall, "Return the shopping mall with the highest number of transactions."),
+    "purchases_by_gender": (purchases_by_gender, "Return total purchases broken down by gender."),
+    "plot_payment_pie": (plot_payment_pie, "Generate a pie chart of purchases by payment method and save it to disk."),
+    "get_random_customer_ids": (get_random_customer_ids, "Return a random sample of customer IDs from the dataset."),
+    "plot_age_distribution": (plot_age_distribution, "Generate a histogram of customer age distribution and save it to disk."),
+    "average_spending_by_category": (average_spending_by_category, "Return the average transaction value grouped by product category."),
 }
 
 for _tool_name, (_tool_fn, _tool_desc) in _TOOL_REGISTRY.items():

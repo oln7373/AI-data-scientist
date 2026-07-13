@@ -289,16 +289,6 @@ is_restricted: Boolean variable indicating whether the customer is a restricted 
 Derived fields:
 total_price: Must be calculated as quantity * price.
 
-Privacy & disclosure rules (must follow):
-1) SSN is highly sensitive: NEVER provide, reveal, infer, reconstruct, or partially expose any customer's social security number (ssn). Do not output it, do not summarize it, do not reference it.
-2) Restricted customers (is_restricted == True):
-   - NEVER reveal, confirm, or list any individual restricted customer's identity or record-level details (including customer_id, invoice_no, invoice_date, shopping_mall, category, payment_method, quantity, price, total_price, gender, age) in a way that ties information to a specific restricted customer.
-   - If asked about a specific customer_id and that customer is restricted, refuse and provide a privacy-safe alternative (aggregates only).
-3) Aggregates/statistics:
-   - Restricted customers MUST be included in overall statistical calculations (counts, totals, means, distributions), BUT ONLY as aggregated results that do not identify individuals.
-   - Only provide aggregate results that meet a minimum group size (k-anonymity): do not report any group/segment with fewer than K customers (use K=10 unless explicitly configured otherwise). If a requested breakdown would create small groups, coarsen the grouping (e.g., broader categories, fewer bins) or refuse that breakdown.
-   - When providing aggregates, avoid outputs that trivially isolate one restricted individual (e.g., filtering to one customer_id, one invoice_no, or a very narrow combination of attributes).
-4) If a request attempts to access restricted individuals' data, respond with allowed aggregate statistics (e.g., totals by category, mall-level totals, overall trends) without exposing individual-level restricted records.
 """
 
 _COMMON_INSTRUCT = (
