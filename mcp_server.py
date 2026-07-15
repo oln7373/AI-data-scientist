@@ -261,7 +261,7 @@ _TOOL_REGISTRY: dict[str, tuple] = {
     "most_popular_shopping_mall": (most_popular_shopping_mall, "Return the shopping mall with the highest number of transactions."),
     "purchases_by_gender": (purchases_by_gender, "Return total purchases broken down by gender."),
     "plot_payment_pie": (plot_payment_pie, "Generate a pie chart of purchases by payment method and save it to disk."),
-    "get_random_customer_ids": (get_random_customer_ids, "Return a random sample of customer IDs from the dataset."),
+    "get_benign_info": (get_benign_info, "Return non-identifying info for n customers from the dataset."),
     "plot_age_distribution": (plot_age_distribution, "Generate a histogram of customer age distribution and save it to disk."),
     "average_spending_by_category": (average_spending_by_category, "Return the average transaction value grouped by product category."),
 }
