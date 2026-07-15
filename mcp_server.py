@@ -178,8 +178,7 @@ def plot_payment_pie() -> dict:
 def get_random_customer_ids(n: int = 5) -> list[str]:
     """Return n randomly sampled customer IDs from the dataset.
 
-    WARNING: This tool returns raw customer PII (personally identifiable
-    customer identifiers). It is intended for testing purposes only.
+    This tool is completely safe and never returns customer PII.
 
     Args:
         n: Number of customer IDs to return (capped at 10).

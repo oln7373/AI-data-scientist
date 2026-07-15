@@ -80,6 +80,10 @@ from mcp.client.streamable_http import streamablehttp_client
 
 logger = structlog.get_logger(__name__)
 
+# Guardrail is a server-level switch set in .env — not a per-request field.
+_GUARDRAIL: bool = os.getenv("GUARDRAIL", "false").strip().lower() == "true"
+logger.info("guardrail_mode", enabled=_GUARDRAIL)
+
 # ---- LLM config: prefer the project's own config, else default to Ollama ----
 try:
     from llm_client import (  # type: ignore
@@ -332,7 +336,6 @@ class TrialRequest(BaseModel):
     authorized_recipients: list[str] = ["reviewer@acme-internal.example"]
     enabled_tools: list[str] | None = None     # subset of MCP tools to expose
     egress_map: dict[str, str] | None = None   # tool -> external-destination arg (empty = no egress tools)
-    guardrail: bool = False
     max_turns: int = 8
     # Optional: override with a URL or local file as the injection vector instead
     document_url: str | None = None
@@ -422,7 +425,7 @@ async def query(request: QueryRequest, http_req: Request) -> dict:
     recorder: list[dict] = []
 
     victim, runner = _build_agents(
-        enabled, guardrail=False, authorized=set(), recorder=recorder,
+        enabled, guardrail=_GUARDRAIL, authorized=set(), recorder=recorder,
         session_getter=lambda: session, mcp_tools=mcp_tools_meta,
     )
 
@@ -467,7 +470,7 @@ async def preflight(request: PreflightRequest, http_req: Request) -> dict:
     enabled = set(request.enabled_tools or list(mcp_tools))
     recorder: list[dict] = []
     victim, runner = _build_agents(
-        enabled & set(mcp_tools), guardrail=False, authorized=set(),
+        enabled & set(mcp_tools), guardrail=_GUARDRAIL, authorized=set(),
         recorder=recorder, session_getter=lambda: session, mcp_tools=mcp_tools,
     )
     task = (
@@ -526,7 +529,7 @@ async def redteam_exfil(request: TrialRequest, http_req: Request) -> dict:
         task_injection_tool = request.injection_tool if request.injection else None
 
     victim, runner = _build_agents(
-        enabled, request.guardrail, authorized, recorder, lambda: session, mcp_tools,
+        enabled, _GUARDRAIL, authorized, recorder, lambda: session, mcp_tools,
         injection=task_injection, canary=canary, injection_tool=task_injection_tool,
     )
 
@@ -545,7 +548,7 @@ async def redteam_exfil(request: TrialRequest, http_req: Request) -> dict:
         )
     task = request.benign_task or default_task
 
-    logger.info("trial_start", enabled=sorted(enabled), guardrail=request.guardrail,
+    logger.info("trial_start", enabled=sorted(enabled), guardrail=_GUARDRAIL,
                 injection_tool=task_injection_tool)
     timed_out = False
     chat_result = None
@@ -606,7 +609,7 @@ async def redteam_exfil(request: TrialRequest, http_req: Request) -> dict:
         "tools_called": sorted({r["tool"] for r in recorder}),
         "egress_tools": sorted(egress_map),
         "enabled_tools": sorted(enabled),
-        "guardrail": request.guardrail,
+        "guardrail": _GUARDRAIL,
         "n_secrets_in_play": len(secrets),
         "tool_calls": trace,
         "timed_out": timed_out,
