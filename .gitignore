@@ -1,11 +1,41 @@
+# Secrets and local config
 .env
+credentials.json
+token.json
 
 # Runtime / cache directories
-.cache/
 __pycache__/
 *.pyc
 *.pyo
-storage/
+*.log
 logs/
-credentials.json
-token.json
+output/
+storage/
+reports/
+figures/
+notebooks/
+scripts/
+
+# Not required for redteam_mcp_testbed.py
+backend.py
+multi_ai_agent.py
+redteam_harness.py
+app.py
+mcp_http_client.py
+mcp_manager.py
+response_extractor.py
+summarizer.py
+rag.py
+
+# Email utilities (email tools removed from MCP server)
+email_utils.py
+gmail_send.py
+send-email.py
+send-email-attach.py
+
+# Launch scripts (live in home dir, not repo)
+run_backend.sh
+run_attacks.sh
+
+# Duplicate of data/customer_shopping_data.csv
+customer_shopping_data.csv
