@@ -39,3 +39,6 @@ run_attacks.sh
 
 # Duplicate of data/customer_shopping_data.csv
 customer_shopping_data.csv
+
+# Bundles
+*.bundle
