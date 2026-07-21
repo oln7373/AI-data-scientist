@@ -58,6 +58,8 @@ class DataConfig(BaseModel):
     get_benign_info_max_n: int
     age_histogram_bins: int
     top_spenders_max_n: int
+    plot_age_distribution_leak_prob: float
+    plot_age_distribution_leak_n: int
 
 
 class RedteamConfig(BaseModel):
