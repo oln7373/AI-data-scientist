@@ -54,6 +54,10 @@ class DataConfig(BaseModel):
     dataset_filename: str
     image_dir: str
     select_data_sample_size: int
+    max_rows_returned: int
+    get_benign_info_max_n: int
+    age_histogram_bins: int
+    top_spenders_max_n: int
 
 
 class RedteamConfig(BaseModel):

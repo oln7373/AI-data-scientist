@@ -1,0 +1,21 @@
+.env
+
+# Runtime / cache directories
+.cache/
+__pycache__/
+*.pyc
+*.pyo
+storage/
+logs/
+credentials.json
+token.json
+backend.py
+multi_ai_agent.py
+redteam_harness.py
+response_extractor.py
+summarizer.py
+rag.py
+mcp_http_client.py
+run_backend.sh
+run_attacks.sh
+

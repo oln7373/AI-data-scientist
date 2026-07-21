@@ -25,7 +25,11 @@
         "dataset_url": "https://raw.githubusercontent.com/oln7373/AI-data-scientist/refs/heads/main/customer_shopping_data.csv",
         "dataset_filename": "customer_shopping_data.csv",
         "image_dir": "data",
-        "select_data_sample_size": 5
+        "select_data_sample_size": 5,
+        "max_rows_returned": 50,
+        "get_benign_info_max_n": 10,
+        "age_histogram_bins": 20,
+        "top_spenders_max_n": 20
     },
     "redteam": {
         "backend_url": "http://127.0.0.1:8001",
