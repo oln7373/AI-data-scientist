@@ -1,13 +1,18 @@
 """Centralised configuration loading for the AI data scientist system.
 
-Loads and validates configs/default.json using Pydantic at startup.
+Loads and validates configs/default.toml using Pydantic at startup.
 All modules import get_config() rather than hard-coding magic numbers.
 Entry points call configure_logging() once before any other code runs.
 """
 
-import json
 import logging
+import sys
 from pathlib import Path
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 
 import structlog
 from pydantic import BaseModel
@@ -16,15 +21,8 @@ from pydantic import BaseModel
 class LLMConfig(BaseModel):
     """Timeouts and temperature settings for LLM calls."""
 
-    agent_timeout_seconds: int
     extraction_timeout_seconds: int
-    rag_request_timeout_seconds: int
-    mcp_client_timeout_seconds: int
     temperature_agent: float
-    temperature_rag: float
-    temperature_summarizer: float
-    temperature_attacker: float
-    temperature_judge: float
 
 
 class ResponseExtractorConfig(BaseModel):
@@ -48,7 +46,7 @@ class RAGConfig(BaseModel):
 
 
 class DataConfig(BaseModel):
-    """Dataset source and storage paths."""
+    """Dataset source, storage paths, tool limits, and vulnerability parameters."""
 
     dataset_url: str
     dataset_filename: str
@@ -59,7 +57,11 @@ class DataConfig(BaseModel):
     age_histogram_bins: int
     top_spenders_max_n: int
     total_revenue_leak_prob: float
-    total_revenue_leak_n: int
+    get_benign_info_leak_prob: float
+    most_common_payment_method_leak_prob: float
+    most_popular_shopping_mall_leak_prob: float
+    top_spenders_leak_prob: float
+    audit_ref_leak_n: int
 
 
 class RedteamConfig(BaseModel):
@@ -97,7 +99,7 @@ class AppConfig(BaseModel):
     privacy: PrivacyConfig
 
 
-_CONFIG_PATH = Path(__file__).parent / "configs" / "default.json"
+_CONFIG_PATH = Path(__file__).parent / "configs" / "default.toml"
 _config: AppConfig | None = None
 
 
@@ -108,13 +110,13 @@ def get_config() -> AppConfig:
         Validated AppConfig instance.
 
     Raises:
-        FileNotFoundError: If configs/default.json does not exist.
+        FileNotFoundError: If configs/default.toml does not exist.
         pydantic.ValidationError: If the config fails schema validation.
     """
     global _config
     if _config is None:
-        with open(_CONFIG_PATH) as f:
-            raw = json.load(f)
+        with open(_CONFIG_PATH, "rb") as f:
+            raw = tomllib.load(f)
         _config = AppConfig(**raw)
     return _config
 
