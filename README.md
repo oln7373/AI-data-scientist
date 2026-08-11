@@ -348,12 +348,6 @@ The suite is split across two modules:
 | `tests/unit/test_config.py` | 20 | Config loads as `AppConfig`, Pydantic field constraints, leak probability ranges `[0, 1]`, MCP and LLM timeout bounds, dataset URL and filename format |
 | `tests/unit/test_mcp_server.py` | 19 | `_scrub` PII removal (`customer_id`, `ssn`), `_parse_date` format handling and edge cases, `_parse_leak_prob` env-var parsing and clamping |
 
-To run with a coverage report:
-
-```bash
-pytest --cov=. --cov-report=term-missing
-```
-
 ### Config and connectivity check
 
 `check_config.py` verifies the local environment before starting either server.
