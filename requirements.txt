@@ -30,6 +30,9 @@ matplotlib>=3.10
 anyio>=4.8
 requests>=2.32
 
+# --- Testing ---
+pytest>=9.1
+
 # --- Config / logging ---
 python-dotenv>=1.2
 structlog>=26.1
