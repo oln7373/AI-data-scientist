@@ -1,0 +1,36 @@
+# Requirements for redteam_mcp_testbed.py + mcp_server.py
+#
+# Install with pip:
+#   pip install -r requirements.txt
+#
+# Install with uv:
+#   uv pip install -r requirements.txt
+#
+# Python 3.10+ required (3.12+ recommended).
+# On Python < 3.11, tomli is needed as a stdlib tomllib backport (included below).
+
+# --- Core framework ---
+fastapi>=0.115
+uvicorn>=0.41
+pydantic>=2.12
+
+# --- MCP ---
+mcp>=1.26
+fastmcp>=3.0
+
+# --- LLM / agent ---
+openai>=1.109
+autogen-agentchat>=0.2.38
+httpx>=0.28
+
+# --- Data / plotting ---
+matplotlib>=3.10
+
+# --- Async / HTTP ---
+anyio>=4.8
+requests>=2.32
+
+# --- Config / logging ---
+python-dotenv>=1.2
+structlog>=26.1
+tomli>=2.2          # backport of stdlib tomllib; no-op on Python 3.11+

@@ -117,7 +117,8 @@ AI-data-scientist/
 ├── data/
 │   └── customer_shopping_data.csv
 ├── env.sample               # Template for .env
-├── myenv.txt                # Conda environment package list
+├── requirements.txt         # pip / uv dependency list
+├── myenv.txt                # Conda environment package list (exact dev environment)
 └── output/                  # Generated charts (created at runtime)
 ```
 
@@ -127,13 +128,25 @@ AI-data-scientist/
 
 ### Python
 
-Python 3.12 or above (CPython). All packages are listed in `myenv.txt`.
+Python 3.10 or above (CPython). 3.12+ is recommended.
 
-The recommended installation method is conda:
+**Option A — conda** (reproduces the exact development environment):
 
 ```bash
 conda create --name myenv --file myenv.txt
 conda activate myenv
+```
+
+**Option B — pip**:
+
+```bash
+pip install -r requirements.txt
+```
+
+**Option C — uv**:
+
+```bash
+uv pip install -r requirements.txt
 ```
 
 ### LLM Backend
@@ -184,11 +197,22 @@ git clone https://github.com/oln7373/AI-data-scientist
 cd AI-data-scientist
 ```
 
-### 2. Create the conda environment
+### 2. Install dependencies
 
+**conda** (exact dev environment):
 ```bash
 conda create --name myenv --file myenv.txt
 conda activate myenv
+```
+
+**pip**:
+```bash
+pip install -r requirements.txt
+```
+
+**uv**:
+```bash
+uv pip install -r requirements.txt
 ```
 
 ### 3. Configure environment variables
