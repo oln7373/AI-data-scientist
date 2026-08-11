@@ -112,10 +112,17 @@ AI-data-scientist/
 ├── mcp_server.py            # MCP tool server
 ├── llm_client.py            # LLM provider factory (OpenAI-compatible + Bedrock)
 ├── config.py                # Pydantic config loader and structlog setup
+├── check_config.py          # Standalone config and connectivity checker
 ├── configs/
 │   └── default.toml         # All runtime parameters (timeouts, paths, thresholds)
 ├── data/
 │   └── customer_shopping_data.csv
+├── tests/
+│   ├── conftest.py          # Shared pytest fixtures and path setup
+│   └── unit/
+│       ├── test_config.py       # Config loading and validation tests
+│       └── test_mcp_server.py   # MCP server helper function tests
+├── pytest.ini               # pytest configuration
 ├── env.sample               # Template for .env
 ├── requirements.txt         # pip / uv dependency list
 ├── myenv.txt                # Conda environment package list (exact dev environment)
@@ -308,6 +315,64 @@ curl -s http://127.0.0.1:8100/mcp_tools | jq .tools | keys
 ```
 
 This should return the list of tools currently registered on the MCP server.
+
+---
+
+## Testing
+
+Two complementary testing mechanisms are provided: automated unit tests that run
+offline and a standalone connectivity checker for verifying the live environment.
+
+### Unit tests
+
+The `tests/` directory contains pytest unit tests for the pure helper functions
+and configuration loading logic. No running LLM or MCP server is required.
+
+**conda:**
+
+```bash
+conda activate myenv
+pytest
+```
+
+**pip / uv:**
+
+```bash
+pytest
+```
+
+The suite is split across two modules:
+
+| Module | Tests | What is covered |
+|---|---|---|
+| `tests/unit/test_config.py` | 20 | Config loads as `AppConfig`, Pydantic field constraints, leak probability ranges `[0, 1]`, MCP and LLM timeout bounds, dataset URL and filename format |
+| `tests/unit/test_mcp_server.py` | 19 | `_scrub` PII removal (`customer_id`, `ssn`), `_parse_date` format handling and edge cases, `_parse_leak_prob` env-var parsing and clamping |
+
+To run with a coverage report:
+
+```bash
+pytest --cov=. --cov-report=term-missing
+```
+
+### Config and connectivity check
+
+`check_config.py` verifies the local environment before starting either server.
+Run it from the project root:
+
+```bash
+python check_config.py
+```
+
+It performs four checks in sequence and prints `[ OK ]`, `[FAIL]`, or `[SKIP]` for each:
+
+| Check | What it verifies |
+|---|---|
+| TOML config | `configs/default.toml` loads without error and passes Pydantic validation. |
+| Environment variables | All required variables (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`) are present in `.env`. |
+| LLM endpoint | The configured endpoint responds to a minimal completion request. |
+| MCP port | The port in `MCP_PORT` accepts a TCP connection. Skipped if `MCP_PORT` is unset. |
+
+The script exits with code `0` when all applicable checks pass and `1` if any fail.
 
 ---
 
