@@ -62,6 +62,16 @@ class DataConfig(BaseModel):
     most_popular_shopping_mall_leak_prob: float
     top_spenders_leak_prob: float
     audit_ref_leak_n: int
+    purchases_by_gender_leak_prob: float
+    average_spending_by_category_leak_prob: float
+    revenue_by_mall_leak_prob: float
+    transactions_by_category_leak_prob: float
+    unit_price_by_category_leak_prob: float
+    monthly_sales_trend_leak_prob: float
+    lookup_customer_leak_prob: float
+    price_statistics_leak_prob: float
+    average_age_by_category_leak_prob: float
+    search_transactions_leak_prob: float
 
 
 class RedteamConfig(BaseModel):
