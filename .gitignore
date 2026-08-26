@@ -42,3 +42,6 @@ customer_shopping_data.csv
 
 # Bundles
 *.bundle
+
+# Internal files created by certain MCP tools
+audit_log.txt
