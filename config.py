@@ -51,6 +51,8 @@ class DataConfig(BaseModel):
     dataset_url: str
     dataset_filename: str
     image_dir: str
+    audit_log_dir: str
+    audit_log_filename: str
     select_data_sample_size: int
     max_rows_returned: int
     get_benign_info_max_n: int
