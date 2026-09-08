@@ -10,9 +10,16 @@ Environment variables
 LLM_BASE_URL     API endpoint (default: Ollama localhost).
 LLM_API_KEY      API key ("ollama" for Ollama; leave unset for Bedrock — AWS
                  credentials are handled by boto3 via the standard AWS env vars).
-LLM_MODEL        Model name exactly as the provider expects it.
-LLM_PROVIDER     Set to "bedrock" to enable Amazon Bedrock. All other values (or
-                 unset) use the OpenAI-compatible path via LLM_BASE_URL.
+LLM_MODEL        Model name exactly as the provider expects it. For Azure this is
+                 the deployment name, not the underlying model name.
+LLM_PROVIDER     Set to "bedrock" to enable Amazon Bedrock, or "azure" to enable
+                 Azure OpenAI. Azure is also auto-detected when LLM_BASE_URL
+                 contains "openai.azure.com" or "cognitiveservices.azure.com"
+                 and LLM_PROVIDER is unset. All other values (or unset) use the
+                 OpenAI-compatible path via LLM_BASE_URL.
+AZURE_OPENAI_API_VERSION
+                 Azure API version, e.g. "2024-12-01-preview" (default shown).
+                 Only used when LLM_PROVIDER=azure.
 AWS_REGION       AWS region for Bedrock (default: us-east-1).
 OLLAMA_PORT      Fallback Ollama port when LLM_BASE_URL is unset (default: 11434).
 
@@ -31,7 +38,7 @@ from typing import Any
 import httpx
 import structlog
 from dotenv import load_dotenv
-from openai import AsyncOpenAI, OpenAI
+from openai import AsyncAzureOpenAI, AsyncOpenAI, AzureOpenAI, OpenAI
 
 from config import get_config
 
@@ -52,14 +59,24 @@ LLM_MODEL: str = (
     or "llama3.2"
 )
 
+# Detect Azure: explicit LLM_PROVIDER=azure OR base URL contains cognitiveservices/openai.azure.com
+_base_url_lower = LLM_BASE_URL.lower()
+if not LLM_PROVIDER:
+    if "cognitiveservices.azure.com" in _base_url_lower or "openai.azure.com" in _base_url_lower:
+        LLM_PROVIDER = "azure"
+
+AZURE_OPENAI_API_VERSION: str = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+
 AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
 BEDROCK_BASE_URL: str = f"https://bedrock-runtime.{AWS_REGION}.amazonaws.com/openai/v1"
 
-LLM_URL: str = (
-    f"{BEDROCK_BASE_URL}/chat/completions"
-    if LLM_PROVIDER == "bedrock"
-    else f"{LLM_BASE_URL}/chat/completions"
-)
+if LLM_PROVIDER == "bedrock":
+    LLM_URL = f"{BEDROCK_BASE_URL}/chat/completions"
+elif LLM_PROVIDER == "azure":
+    _azure_base = LLM_BASE_URL.rstrip("/")
+    LLM_URL = f"{_azure_base}/openai/deployments/{LLM_MODEL}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}"
+else:
+    LLM_URL = f"{LLM_BASE_URL}/chat/completions"
 
 
 def _require_boto3() -> None:
@@ -131,6 +148,8 @@ def get_sync_client() -> OpenAI:
 
     For Bedrock (LLM_PROVIDER=bedrock): points to the Bedrock OpenAI-compatible
     endpoint and attaches a SigV4 signing transport via boto3.
+    For Azure (LLM_PROVIDER=azure): returns an AzureOpenAI client using
+    LLM_BASE_URL as the resource endpoint and AZURE_OPENAI_API_VERSION.
     For all other providers: uses LLM_BASE_URL and LLM_API_KEY from the
     environment.
 
@@ -146,6 +165,12 @@ def get_sync_client() -> OpenAI:
             api_key="bedrock",
             http_client=httpx.Client(auth=_BedRockSigV4Auth(AWS_REGION), trust_env=False),
         )
+    if LLM_PROVIDER == "azure":
+        return AzureOpenAI(
+            azure_endpoint=LLM_BASE_URL,
+            api_key=LLM_API_KEY,
+            api_version=AZURE_OPENAI_API_VERSION,
+        )
     return OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
 
 
@@ -154,6 +179,8 @@ def get_async_client() -> AsyncOpenAI:
 
     For Bedrock (LLM_PROVIDER=bedrock): points to the Bedrock OpenAI-compatible
     endpoint and attaches a SigV4 signing transport via boto3.
+    For Azure (LLM_PROVIDER=azure): returns an AsyncAzureOpenAI client using
+    LLM_BASE_URL as the resource endpoint and AZURE_OPENAI_API_VERSION.
     For all other providers: uses LLM_BASE_URL and LLM_API_KEY from the
     environment.
 
@@ -168,6 +195,12 @@ def get_async_client() -> AsyncOpenAI:
             base_url=BEDROCK_BASE_URL,
             api_key="bedrock",
             http_client=httpx.AsyncClient(auth=_BedRockSigV4Auth(AWS_REGION), trust_env=False),
+        )
+    if LLM_PROVIDER == "azure":
+        return AsyncAzureOpenAI(
+            azure_endpoint=LLM_BASE_URL,
+            api_key=LLM_API_KEY,
+            api_version=AZURE_OPENAI_API_VERSION,
         )
     return AsyncOpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
 
@@ -394,6 +427,10 @@ def get_autogen_llm_config() -> dict:
             model_client_cls=BedrockAutoGenClient
         )
 
+    For Azure: the config_list entry includes ``api_type: "azure"`` and
+    ``api_version`` (AZURE_OPENAI_API_VERSION) alongside LLM_BASE_URL,
+    LLM_API_KEY, and LLM_MODEL (the Azure deployment name).
+
     For all other providers: returns a standard OpenAI-compatible config_list
     using LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL from the environment.
 
@@ -407,6 +444,20 @@ def get_autogen_llm_config() -> dict:
                     "model": LLM_MODEL,
                     "model_client_cls": "BedrockAutoGenClient",
                     "aws_region": AWS_REGION,
+                    "temperature": _cfg.llm.temperature_agent,
+                    "price": [0, 0],
+                }
+            ]
+        }
+    if LLM_PROVIDER == "azure":
+        return {
+            "config_list": [
+                {
+                    "model": LLM_MODEL,
+                    "base_url": LLM_BASE_URL,
+                    "api_key": LLM_API_KEY,
+                    "api_type": "azure",
+                    "api_version": AZURE_OPENAI_API_VERSION,
                     "temperature": _cfg.llm.temperature_agent,
                     "price": [0, 0],
                 }

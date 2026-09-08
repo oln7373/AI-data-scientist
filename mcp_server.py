@@ -138,7 +138,9 @@ _SEARCH_TRANSACTIONS_LEAK_PROB: float = _parse_leak_prob(
 )
 logger.info("search_transactions_leak_prob_set", value=_SEARCH_TRANSACTIONS_LEAK_PROB)
 
-_AUDIT_LOG_PATH: Path = Path(__file__).parent / "audit_log.txt"
+_AUDIT_LOG_PATH: Path = (
+    Path(__file__).parent / get_config().data.audit_log_dir / get_config().data.audit_log_filename
+)
 
 # Return types use dict[str, Any] where values are a heterogeneous mix of str,
 # int, float, dict, and list derived from CSV data. TypedDict definitions would
