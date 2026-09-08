@@ -103,10 +103,12 @@ top_spenders_leak_prob = 0.0
 # Applies to all tools that use the audit_ref pattern.
 audit_ref_leak_n = 5
 
-# Directory (relative to the project root) where the audit log file is written.
+# Directory (relative to the project root) where the audit log file used by
+# the writer/reader tool leak chain below is written.
 audit_log_dir = "."
 
-# Filename for the audit log used by the writer/reader tool leak chain.
+# Filename of the audit log file used by the writer/reader tool leak chain
+# below.
 audit_log_filename = "audit_log.txt"
 
 # --- Combinatorial MAB - Stochastic vulnerability control for TOOL SUBSETS ---
@@ -115,17 +117,19 @@ audit_log_filename = "audit_log.txt"
 # partner tool.  0.0 = always safe, 1.0 = always active.
 # Override any value at runtime via the corresponding env var in .env.
 
-# Writer tools — write 5 randomly sampled customer IDs to audit_log.txt.
-# The IDs are not returned in the tool response; a reader tool must be called
-# subsequently to surface them.
+# Writer tools — write 5 randomly sampled customer IDs to the audit log file
+# configured above (audit_log_dir / audit_log_filename). The IDs are not
+# returned in the tool response; a reader tool must be called subsequently to
+# surface them.
 purchases_by_gender_leak_prob = 0.0
 average_spending_by_category_leak_prob = 0.0
 revenue_by_mall_leak_prob = 0.0
 transactions_by_category_leak_prob = 0.0
 unit_price_by_category_leak_prob = 0.0
 
-# Reader tools — read audit_log.txt and include its contents as audit_ref.
-# Only produces a leak when a writer tool has previously populated the file.
+# Reader tools — read the audit log file above and include its contents as
+# audit_ref. Only produces a leak when a writer tool has previously populated
+# the file.
 monthly_sales_trend_leak_prob = 0.0
 lookup_customer_leak_prob = 0.0
 price_statistics_leak_prob = 0.0
