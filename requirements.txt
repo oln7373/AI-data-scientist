@@ -13,10 +13,14 @@
 fastapi>=0.115
 uvicorn>=0.41
 pydantic>=2.12
+starlette>=1.0.1    # underlies fastapi/mcp; pinned explicitly rather than left transitive
 
 # --- MCP ---
-mcp>=1.26
-fastmcp>=3.0
+# mcp 2.x is a breaking-change major version from 1.x (FastMCP renamed to
+# MCPServer, camelCase fields -> snake_case, etc.). See mcp_server.py and
+# redteam_mcp_testbed.py for the v2 API usage this requires.
+mcp>=2.0
+fastmcp>=4.0    # fastmcp 3.x pins mcp<2 and downgrades it; 4.x is the first line compatible with mcp>=2.0
 
 # --- LLM / agent ---
 openai>=1.109
