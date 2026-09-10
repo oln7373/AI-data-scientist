@@ -76,7 +76,7 @@ load_dotenv()
 
 from mcp import ClientSession
 from mcp.client.sse import sse_client
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 logger = structlog.get_logger(__name__)
 
@@ -146,7 +146,7 @@ def _mcp_url() -> str:
 
 def _unwrap(result) -> object:
     """Turn an MCP CallToolResult into a plain Python value."""
-    sc = getattr(result, "structuredContent", None)
+    sc = getattr(result, "structured_content", None)
     if isinstance(sc, dict):
         for k in ("result", "output", "answer"):
             if k in sc:
@@ -173,14 +173,14 @@ async def _open_mcp(app: FastAPI) -> None:
     if transport == "sse":
         read, write = await stack.enter_async_context(sse_client(url))
     else:
-        read, write, _ = await stack.enter_async_context(streamablehttp_client(url))
+        read, write = await stack.enter_async_context(streamable_http_client(url))
     session = await stack.enter_async_context(ClientSession(read, write))
     await session.initialize()
     listed = await session.list_tools()
     app.state.mcp_stack = stack
     app.state.mcp_session = session
     app.state.mcp_tools = {
-        t.name: {"description": t.description or "", "schema": t.inputSchema or {}}
+        t.name: {"description": t.description or "", "schema": t.input_schema or {}}
         for t in listed.tools
     }
     logger.info("mcp_connected", url=url, transport=transport,

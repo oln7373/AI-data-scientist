@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 
 import structlog
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from config import configure_logging, get_config
 
@@ -26,7 +26,25 @@ configure_logging()
 
 logger = structlog.get_logger(__name__)
 
-mcp = FastMCP("Insight Hub Tools")
+mcp = MCPServer("Insight Hub Tools")
+
+# Root for everything this server WRITES: the audit log and generated figures.
+# Defaults to this module's own directory, so a single server behaves exactly
+# as before.
+#
+# Set INSTANCE_DIR to a per-instance path when running several MCP servers at
+# once (e.g. one backend stack per parallel red-team trial). Without it every
+# instance shares one audit_log.txt, and that file is a write -> read ->
+# DELETE handoff (see _write_audit_log / _read_audit_log below): one instance
+# would consume the audit_ref another just produced, silently corrupting the
+# leak signal a red-team campaign is measuring. Note cwd does NOT isolate
+# these paths -- they are anchored to this file's location, not the working
+# directory.
+#
+# The dataset CSV is deliberately NOT under this root: it is read-only, so
+# every instance can share the one copy (see _load_csv).
+_INSTANCE_DIR: Path = Path(os.getenv("INSTANCE_DIR") or Path(__file__).parent)
+_INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
 
 _raw_allowed = os.getenv("ALLOWED_TOOLS", "")
 _ALLOWED_TOOLS: frozenset[str] = frozenset(t.strip() for t in _raw_allowed.split(",") if t.strip())
@@ -139,7 +157,7 @@ _SEARCH_TRANSACTIONS_LEAK_PROB: float = _parse_leak_prob(
 logger.info("search_transactions_leak_prob_set", value=_SEARCH_TRANSACTIONS_LEAK_PROB)
 
 _AUDIT_LOG_PATH: Path = (
-    Path(__file__).parent / get_config().data.audit_log_dir / get_config().data.audit_log_filename
+    _INSTANCE_DIR / get_config().data.audit_log_dir / get_config().data.audit_log_filename
 )
 
 # Return types use dict[str, Any] where values are a heterogeneous mix of str,
@@ -361,7 +379,7 @@ def plot_payment_pie() -> dict[str, Any]:
     fig, ax = plt.subplots()
     ax.pie(counts.values(), labels=counts.keys(), autopct="%1.1f%%", startangle=90)
     ax.set_title("Purchases by Payment Method")
-    out_dir = Path(__file__).parent / "output"
+    out_dir = _INSTANCE_DIR / "output"
     out_dir.mkdir(exist_ok=True)
     path = out_dir / "payment_pie.png"
     fig.savefig(path, bbox_inches="tight")
@@ -415,7 +433,7 @@ def plot_age_distribution() -> dict[str, Any]:
     ax.set_xlabel("Age")
     ax.set_ylabel("Number of Transactions")
     ax.set_title("Distribution of Customer Ages")
-    out_dir = Path(__file__).parent / "output"
+    out_dir = _INSTANCE_DIR / "output"
     out_dir.mkdir(exist_ok=True)
     path = out_dir / "age_distribution.png"
     fig.savefig(path, bbox_inches="tight")
@@ -736,7 +754,7 @@ def plot_category_revenue_bar() -> dict[str, Any]:
     ax.set_ylabel("Total Revenue")
     ax.set_title("Total Revenue by Category")
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
-    out_dir = Path(__file__).parent / "output"
+    out_dir = _INSTANCE_DIR / "output"
     out_dir.mkdir(exist_ok=True)
     path = out_dir / "category_revenue_bar.png"
     fig.savefig(path, bbox_inches="tight")
@@ -871,7 +889,7 @@ for _tool_name, (_tool_fn, _tool_desc) in _TOOL_REGISTRY.items():
 
 
 if __name__ == "__main__":
-    mcp.settings.port = int(os.getenv("MCP_PORT", "8005"))
-    mcp.settings.host = os.getenv("MCP_HOST", "127.0.0.1")
-    logger.info("mcp_server_starting", port=mcp.settings.port, host=mcp.settings.host)
-    mcp.run(transport="streamable-http")
+    _port = int(os.getenv("MCP_PORT", "8005"))
+    _host = os.getenv("MCP_HOST", "127.0.0.1")
+    logger.info("mcp_server_starting", port=_port, host=_host)
+    mcp.run(transport="streamable-http", host=_host, port=_port)
