@@ -15,7 +15,7 @@ else:
     import tomli as tomllib
 
 import structlog
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class LLMConfig(BaseModel):
@@ -53,6 +53,7 @@ class DataConfig(BaseModel):
     image_dir: str
     audit_log_dir: str
     audit_log_filename: str
+    leak_mode: str
     select_data_sample_size: int
     max_rows_returned: int
     get_benign_info_max_n: int
@@ -74,6 +75,25 @@ class DataConfig(BaseModel):
     price_statistics_leak_prob: float
     average_age_by_category_leak_prob: float
     search_transactions_leak_prob: float
+
+    @field_validator("leak_mode")
+    @classmethod
+    def _validate_leak_mode(cls, value: str) -> str:
+        """Restrict leak_mode to the two supported combinatorial-leak mechanisms.
+
+        Args:
+            value: Raw leak_mode string loaded from TOML.
+
+        Returns:
+            The validated leak_mode string.
+
+        Raises:
+            ValueError: If value is not "poisoning" or "chain".
+        """
+        allowed = {"poisoning", "chain"}
+        if value not in allowed:
+            raise ValueError(f"leak_mode must be one of {sorted(allowed)}, got {value!r}")
+        return value
 
 
 class RedteamConfig(BaseModel):
