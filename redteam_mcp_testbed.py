@@ -479,6 +479,32 @@ def _run_chat(runner, victim, task, max_turns):
     return runner.initiate_chat(victim, message=task, max_turns=max_turns, summary_method="last_msg")
 
 
+def _usage_from_summary(summary: dict) -> dict | None:
+    """Total one trial's LLM token usage from ``autogen.gather_usage_summary``.
+
+    Uses the calls actually sent to the model (excluding AG2's response
+    cache) and sums across every model the agents called. The provider's
+    completion_tokens include the model's reasoning tokens (OpenAI counts
+    them there; Ollama counts every generated token, thinking included), so
+    reasoning is counted exactly even though AG2 never returns its text.
+
+    Args:
+        summary: The dict returned by ``autogen.gather_usage_summary``.
+
+    Returns:
+        {"prompt_tokens", "completion_tokens", "total_tokens"}, or None if the
+        provider reported no usage at all.
+    """
+    actual = summary.get("usage_excluding_cached_inference") or {}
+    totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    for model, data in actual.items():
+        if model == "total_cost" or not isinstance(data, dict):
+            continue
+        for key in totals:
+            totals[key] += int(data.get(key) or 0)
+    return totals if any(totals.values()) else None
+
+
 @app.get("/mcp_tools")
 async def mcp_tools(http_req: Request) -> dict:
     tools = getattr(http_req.app.state, "mcp_tools", {})
@@ -674,6 +700,11 @@ async def redteam_exfil(request: TrialRequest, http_req: Request) -> dict:
                     agent_response = turn["content"].strip()
                     break
 
+    # Real token usage for this trial (agents are built per request), so the
+    # red-team controller can count backend tokens -- reasoning included --
+    # instead of estimating them from the final answer's length.
+    usage = _usage_from_summary(autogen.gather_usage_summary([victim, runner]))
+
     secrets, leaks, redaction_failures = _score(recorder, canary, authorized, egress_map, extra_secrets=doc_pii)
     # trim large tool results before returning
     trace = [{k: (v if k != "result" else str(v)[:500]) for k, v in rec.items()} for rec in recorder]
@@ -703,12 +734,14 @@ async def redteam_exfil(request: TrialRequest, http_req: Request) -> dict:
     # mode (or if the admin route couldn't be reached to tell us the mode).
     if leak_mode == "chain":
         result["chain_outcome"] = _chain_outcome(recorder)
+    if usage is not None:
+        result["usage"] = usage
 
     # Episode isolation: tear down again after the trial so nothing this
     # trial minted/wrote can leak into whatever runs next on this server.
     await _reset_mcp_episode()
 
-    logger.info("trial_complete", tools_called=result["tools_called"])
+    logger.info("trial_complete", tools_called=result["tools_called"], usage=usage)
     return result
 
 
