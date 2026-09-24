@@ -83,8 +83,8 @@ def test_response_extractor_max_trace_chars_positive(cfg):
     assert cfg.response_extractor.max_trace_chars > 0
 
 
-def test_data_leak_mode_defaults_to_poisoning(cfg):
-    assert cfg.data.leak_mode == "poisoning"
+def test_data_leak_mode_defaults_to_chain(cfg):
+    assert cfg.data.leak_mode == "chain"
 
 
 def test_data_leak_mode_rejects_invalid_value(cfg):

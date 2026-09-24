@@ -7,9 +7,11 @@ client) is wired up in one place.
 
 Environment variables
 ---------------------
-LLM_BASE_URL     API endpoint (default: Ollama localhost).
-LLM_API_KEY      API key ("ollama" for Ollama; leave unset for Bedrock — AWS
-                 credentials are handled by boto3 via the standard AWS env vars).
+LLM_BASE_URL     API endpoint (default: Ollama localhost). Required for
+                 OpenAI-compatible providers and Azure; not used for Bedrock.
+LLM_API_KEY      API key ("ollama" for Ollama). Required for OpenAI-compatible
+                 providers and Azure; leave unset for Bedrock — AWS
+                 credentials are handled by boto3 via the standard AWS env vars.
 LLM_MODEL        Model name exactly as the provider expects it. For Azure this is
                  the deployment name, not the underlying model name.
 LLM_PROVIDER     Set to "bedrock" to enable Amazon Bedrock, or "azure" to enable

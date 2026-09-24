@@ -23,8 +23,16 @@ mcp>=2.0
 fastmcp>=4.0    # fastmcp 3.x pins mcp<2 and downgrades it; 4.x is the first line compatible with mcp>=2.0
 
 # --- LLM / agent ---
-openai>=1.109
-autogen-agentchat>=0.2.38
+# autogen 0.14.1 needs openai>=2.30 at runtime (checked when an agent is built,
+# not enforced by pip). Capped at the latest release verified end to end.
+openai>=2.30.0,<=3.19.2
+# AutoGen: the testbed uses the classic `import autogen` API (AssistantAgent,
+# UserProxyAgent, register_function), which is maintained as AG2 and published
+# on PyPI as `autogen` / `ag2` / `pyautogen`. Do NOT use autogen-agentchat>=0.4:
+# that is Microsoft's rewrite, which has no `autogen` module. All of these
+# packages install into the same `autogen/` directory, so install only one.
+# Capped below 1.0 because AG2 1.x has not been verified against this code.
+autogen>=0.14.1,<1.0
 httpx>=0.28
 
 # --- Data / plotting ---

@@ -116,7 +116,7 @@ audit_log_filename = "audit_log.txt"
 # audit log file above; reader tools read+delete it) or "chain"
 # (reference-chaining: writer tools mint an opaque record_ref, and only
 # the paired reader tool below can resolve it into a customer ID).
-# Defaults to "poisoning" so existing campaigns are unaffected.
+# Default is "chain"; set "poisoning" to use the audit log file mechanism.
 leak_mode = "chain"
 
 # In "chain" mode, each writer tool unconditionally mints a record_ref
@@ -138,11 +138,11 @@ leak_mode = "chain"
 # Override any value at runtime via the corresponding env var in .env.
 #
 # Meaning depends on leak_mode above:
-#   poisoning (default) — writer knobs control the probability of writing
+#   poisoning — writer knobs control the probability of writing
 #     sampled customer IDs to the audit log file; reader knobs control the
 #     probability of reading+returning its contents as audit_ref. Writer
 #     AND reader must both fire for a leak.
-#   chain — writer knobs are IGNORED (writer tools always mint a
+#   chain (default) — writer knobs are IGNORED (writer tools always mint a
 #     record_ref); reader knobs control the probability that resolving a
 #     valid, paired record_ref surfaces the customer ID as audit_ref.
 

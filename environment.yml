@@ -1,0 +1,14 @@
+# Conda environment for redteam_mcp_testbed.py + mcp_server.py.
+# Creates a complete, working environment in one step:
+#   conda env create -f environment.yml
+#   conda activate myenv
+# Python packages come from requirements.txt, so conda and pip installs get the
+# same versions.
+name: myenv
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - -r requirements.txt
