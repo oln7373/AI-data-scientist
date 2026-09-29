@@ -183,6 +183,46 @@ rate_limit_delay_seconds = 0.3
 
 
 # -----------------------------------------------------------------------------
+# [testbed] — redteam_mcp_testbed.py concurrency, timeouts, and LLM routing
+# -----------------------------------------------------------------------------
+# One testbed (plus one MCP server) can serve many concurrent red-team trials:
+# each trial runs in its own MCP episode, so there is no need to start one
+# backend stack per parallel trial.
+[testbed]
+
+# Most agent chats that may run at once. Requests beyond this wait in the
+# testbed. With a cloud LLM API this is also your throttle against the
+# provider's requests/tokens-per-minute limits.
+max_concurrent_trials = 64
+
+# Seconds before a whole trial (the agent chat) is abandoned and reported as
+# timed out. Overridable via the AGENT_TIMEOUT env var.
+agent_timeout_seconds = 180
+
+# Seconds before fetching a document_url (or an MCP admin route) gives up.
+# Overridable via the FETCH_TIMEOUT env var.
+fetch_timeout_seconds = 15
+
+# Seconds before a single LLM request times out (passed to the OpenAI client).
+llm_call_timeout_seconds = 120
+
+# Retries (with backoff) for a failed LLM request, e.g. a 429 rate limit.
+llm_max_retries = 2
+
+# Pool of OpenAI-compatible LLM servers, typically one Ollama per GPU. Each
+# trial is pinned to the endpoint with the lowest in_flight / slots, and waits
+# in the testbed when every endpoint is full. Set slots to that server's
+# OLLAMA_NUM_PARALLEL. Leave empty to use LLM_BASE_URL alone.
+# Overridable via the LLM_ENDPOINTS env var: "url=slots,url=slots".
+# Ignored for Bedrock and Azure, which are routed by the provider.
+llm_endpoints = []
+# llm_endpoints = [
+#     { url = "http://127.0.0.1:11440/v1", slots = 24 },  # GPU 0 (A100)
+#     { url = "http://127.0.0.1:11441/v1", slots = 24 },  # GPU 1 (RTX 8000)
+# ]
+
+
+# -----------------------------------------------------------------------------
 # [mcp] — MCP client connection settings
 # -----------------------------------------------------------------------------
 [mcp]

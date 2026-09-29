@@ -34,6 +34,7 @@ Bedrock prerequisites (not pre-installed)::
 """
 
 import os
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -244,6 +245,43 @@ class _BedrockResponse:
     id: str = ""
 
 
+_bedrock_runtime_clients: dict[str, Any] = {}
+_bedrock_runtime_lock = threading.Lock()
+
+
+def _shared_bedrock_runtime(region: str) -> Any:  # Any: boto3 clients are dynamically typed
+    """Return the process-wide bedrock-runtime client for a region.
+
+    Creating boto3 clients concurrently from the default session is not
+    thread-safe, and the testbed builds a BedrockAutoGenClient per trial on
+    many threads at once. One client per region is built under a lock and
+    then shared -- botocore clients are thread-safe once created. Its
+    connection pool is sized for the testbed's concurrency, and its retry
+    budget matches the OpenAI-compatible path's.
+
+    Args:
+        region: AWS region string.
+
+    Returns:
+        A boto3 bedrock-runtime client.
+    """
+    with _bedrock_runtime_lock:
+        if region not in _bedrock_runtime_clients:
+            import boto3
+            from botocore.config import Config
+
+            _bedrock_runtime_clients[region] = boto3.session.Session().client(
+                "bedrock-runtime",
+                region_name=region,
+                config=Config(
+                    max_pool_connections=_cfg.testbed.max_concurrent_trials,
+                    read_timeout=_cfg.testbed.llm_call_timeout_seconds,
+                    retries={"mode": "standard", "max_attempts": _cfg.testbed.llm_max_retries + 1},
+                ),
+            )
+        return _bedrock_runtime_clients[region]
+
+
 class BedrockAutoGenClient:
     """AutoGen 0.2 custom model client backed by Amazon Bedrock Converse API.
 
@@ -266,7 +304,7 @@ class BedrockAutoGenClient:
         _model_id: Bedrock model ID.
         _region: AWS region.
         _temperature: Sampling temperature loaded from config.
-        _client: boto3 bedrock-runtime client.
+        _client: Shared boto3 bedrock-runtime client (see _shared_bedrock_runtime).
     """
 
     def __init__(self, config: dict, **kwargs: Any) -> None:
@@ -282,14 +320,13 @@ class BedrockAutoGenClient:
             ImportError: If boto3 is not installed.
         """
         _require_boto3()
-        import boto3
 
         self._model_id: str = config.get("model", LLM_MODEL)
         self._region: str = config.get("aws_region", AWS_REGION)
         self._temperature: float = float(
             config.get("temperature", _cfg.llm.temperature_agent)
         )
-        self._client = boto3.client("bedrock-runtime", region_name=self._region)
+        self._client = _shared_bedrock_runtime(self._region)
         logger.info(
             "bedrock_autogen_client_init",
             model=self._model_id,

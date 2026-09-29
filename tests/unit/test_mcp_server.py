@@ -1,7 +1,5 @@
 """Unit tests for pure helper functions in mcp_server.py."""
 
-import pytest
-
 
 # Import once at module level — mcp_server has side effects at import time
 # (load_dotenv, configure_logging, get_config) but none that break tests.

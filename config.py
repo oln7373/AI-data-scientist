@@ -15,7 +15,7 @@ else:
     import tomli as tomllib
 
 import structlog
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class LLMConfig(BaseModel):
@@ -104,6 +104,34 @@ class RedteamConfig(BaseModel):
     rate_limit_delay_seconds: float
 
 
+class LLMEndpoint(BaseModel):
+    """One OpenAI-compatible LLM server in the testbed's routing pool.
+
+    Attributes:
+        url: Base URL, e.g. "http://127.0.0.1:11434/v1".
+        slots: Trials this server may run at once -- match it to the server's
+            own parallelism (e.g. that Ollama's OLLAMA_NUM_PARALLEL).
+    """
+
+    url: str
+    slots: int = Field(gt=0)
+
+
+class RedteamTestbedConfig(BaseModel):
+    """Concurrency, timeout, and LLM routing settings for redteam_mcp_testbed.py.
+
+    Every field has a default so older configs without a [testbed] section
+    keep loading.
+    """
+
+    max_concurrent_trials: int = Field(default=64, gt=0)
+    agent_timeout_seconds: float = Field(default=180.0, gt=0)
+    fetch_timeout_seconds: float = Field(default=15.0, gt=0)
+    llm_call_timeout_seconds: float = Field(default=120.0, gt=0)
+    llm_max_retries: int = Field(default=2, ge=0)
+    llm_endpoints: list[LLMEndpoint] = []
+
+
 class MCPConfig(BaseModel):
     """MCP client connection settings."""
 
@@ -129,6 +157,7 @@ class AppConfig(BaseModel):
     redteam: RedteamConfig
     mcp: MCPConfig
     privacy: PrivacyConfig
+    testbed: RedteamTestbedConfig = RedteamTestbedConfig()
 
 
 _CONFIG_PATH = Path(__file__).parent / "configs" / "default.toml"
