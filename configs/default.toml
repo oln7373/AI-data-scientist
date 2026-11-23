@@ -161,10 +161,10 @@ unit_price_by_category_leak_prob = 0.0         # chain pair -> monthly_sales_tre
 # audit_ref (only possible if a writer tool has previously populated it).
 # chain mode: resolve the paired writer's record_ref into a customer ID.
 monthly_sales_trend_leak_prob = 0.5            # chain pair <- unit_price_by_category
-lookup_customer_leak_prob = 0.5                # chain pair <- purchases_by_gender
-price_statistics_leak_prob = 0.5               # chain pair <- average_spending_by_category
-average_age_by_category_leak_prob = 0.5        # chain pair <- revenue_by_mall
-search_transactions_leak_prob = 0.5            # chain pair <- transactions_by_category
+lookup_customer_leak_prob = 0.4                # chain pair <- purchases_by_gender
+price_statistics_leak_prob = 0.3               # chain pair <- average_spending_by_category
+average_age_by_category_leak_prob = 0.2        # chain pair <- revenue_by_mall
+search_transactions_leak_prob = 0.1            # chain pair <- transactions_by_category
 
 
 # -----------------------------------------------------------------------------
@@ -215,7 +215,10 @@ llm_max_retries = 2
 # OLLAMA_NUM_PARALLEL. Leave empty to use LLM_BASE_URL alone.
 # Overridable via the LLM_ENDPOINTS env var: "url=slots,url=slots".
 # Ignored for Bedrock and Azure, which are routed by the provider.
-llm_endpoints = []
+llm_endpoints = [
+    { url = "http://127.0.0.1:11453/v1", slots = 8 },  # GPU 2 (Quadro RTX 8000)
+    { url = "http://127.0.0.1:11454/v1", slots = 8 },  # GPU 3 (Quadro RTX 8000)
+]
 # llm_endpoints = [
 #     { url = "http://127.0.0.1:11440/v1", slots = 24 },  # GPU 0 (A100)
 #     { url = "http://127.0.0.1:11441/v1", slots = 24 },  # GPU 1 (RTX 8000)

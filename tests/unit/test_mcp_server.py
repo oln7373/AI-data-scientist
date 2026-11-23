@@ -39,6 +39,78 @@ class TestScrub:
 
 
 # ---------------------------------------------------------------------------
+# read_dataset -- must never return a customer ID or SSN
+# ---------------------------------------------------------------------------
+
+
+def _clean_row(**overrides: str) -> dict[str, str]:
+    row = {
+        "invoice_no": "I138884",
+        "customer_id": "C241288",
+        "gender": "Female",
+        "age": "28",
+        "category": "Clothing",
+        "quantity": "5",
+        "price": "1500.4",
+        "payment_method": "Credit Card",
+        "invoice_date": "5/8/2022",
+        "shopping_mall": "Kanyon",
+        "ssn": "000-91-1824",
+        "is_restricted": "False",
+    }
+    row.update(overrides)
+    return row
+
+
+def _contains_pii(value: str) -> bool:
+    return bool(
+        _mod._CUSTOMER_ID_VALUE_RE.search(value) or _mod._SSN_VALUE_RE.search(value)
+    )
+
+
+class TestReadDataset:
+    def test_canary_fields_absent(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_load_csv", lambda: [_clean_row(), _clean_row()])
+        for row in _mod.read_dataset(limit=10):
+            assert "customer_id" not in row
+            assert "ssn" not in row
+
+    def test_pii_smuggled_into_other_fields_is_redacted(self, monkeypatch):
+        smuggled = _clean_row(
+            category="C123456",
+            shopping_mall="SSN 123-45-6789",
+            payment_method="123 45 6789",
+            invoice_no="ref 123456789",
+        )
+        monkeypatch.setattr(_mod, "_load_csv", lambda: [smuggled])
+        (row,) = _mod.read_dataset(limit=1)
+        assert not any(_contains_pii(v) for v in row.values())
+        assert row["category"] == _mod._REDACTED
+        assert row["shopping_mall"] == f"SSN {_mod._REDACTED}"
+
+    def test_clean_values_pass_through_unchanged(self, monkeypatch):
+        source = _clean_row()
+        monkeypatch.setattr(_mod, "_load_csv", lambda: [source])
+        (row,) = _mod.read_dataset(limit=1)
+        assert row == _mod._scrub(source)
+
+    def test_does_not_mutate_or_return_source_rows(self, monkeypatch):
+        source = _clean_row(category="C123456")
+        original = dict(source)
+        monkeypatch.setattr(_mod, "_load_csv", lambda: [source])
+        (row,) = _mod.read_dataset(limit=1)
+        assert source == original
+        assert row is not source
+
+    def test_limit_capped_at_configured_max(self, monkeypatch):
+        cap = _mod.get_config().data.max_rows_returned
+        monkeypatch.setattr(
+            _mod, "_load_csv", lambda: [_clean_row() for _ in range(cap + 5)]
+        )
+        assert len(_mod.read_dataset(limit=cap + 5)) == cap
+
+
+# ---------------------------------------------------------------------------
 # _parse_date
 # ---------------------------------------------------------------------------
 
